@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Runs py_conf_sync.py inside Docker so nothing executes on the host.
+# Usage: csync [--rebuild] <py_conf_sync args...>
+#   --rebuild  Force a fresh local build before running
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_IMAGE="py-conf-sync:local"
+PUBLISHED_IMAGE="ghcr.io/kellenmurphy/py-conf-sync:latest"
+
+if [[ "${1:-}" == "--rebuild" ]]; then
+    shift
+    docker build -t "$LOCAL_IMAGE" "$SCRIPT_DIR" >&2
+    IMAGE="$LOCAL_IMAGE"
+elif docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1; then
+    IMAGE="$LOCAL_IMAGE"
+elif docker pull "$PUBLISHED_IMAGE" >/dev/null 2>&1; then
+    IMAGE="$PUBLISHED_IMAGE"
+else
+    echo "[py-conf-sync] No image found — building locally..." >&2
+    docker build -q -t "$LOCAL_IMAGE" "$SCRIPT_DIR" >&2
+    IMAGE="$LOCAL_IMAGE"
+fi
+
+# Mount ~/.csync.env into the container at the same path so _find_env_file() can locate it
+home_env_args=()
+if [[ -f "$HOME/.csync.env" ]]; then
+    home_env_args+=(-v "$HOME/.csync.env:$HOME/.csync.env" -e "HOME=$HOME")
+fi
+
+# Auto-mount any absolute paths in the arguments (handles: scan /abs/path, --config /abs/file)
+extra_mounts=()
+for arg in "$@"; do
+    if [[ "$arg" == /* ]] && [[ -e "$arg" ]]; then
+        extra_mounts+=(-v "$arg:$arg")
+    fi
+done
+
+exec docker run --rm \
+    --user "$(id -u):$(id -g)" \
+    -v "$(pwd):/workspace" \
+    -w /workspace \
+    "${home_env_args[@]+"${home_env_args[@]}"}" \
+    "${extra_mounts[@]+"${extra_mounts[@]}"}" \
+    "$IMAGE" \
+    "$@"

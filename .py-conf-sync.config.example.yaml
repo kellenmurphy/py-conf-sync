@@ -1,0 +1,19 @@
+# py-conf-sync example configuration
+# Copy this file to sync_config.yaml and fill in your values.
+# Run `./csync init` to generate a fresh copy.
+
+confluence_url: https://confluence.example.com
+jira_url: https://jira.example.com  # optional — enables Jira macro links on pull
+
+pages:
+  - page_id: "123456"
+    file_path: docs/onboarding.md
+    title: Onboarding Guide
+
+  - page_id: "234567"
+    file_path: docs/architecture/overview.md
+    title: Architecture Overview
+
+  - page_id: "345678"
+    file_path: docs/runbooks/deploy.md
+    title: Deployment Runbook
