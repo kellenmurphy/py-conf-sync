@@ -7,16 +7,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container:
-      image: dhi.io/python:3.13-debian13-dev
-      credentials:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+      - name: Log in to Docker Hardened Images
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            dhi.io/python:3.13-debian13-dev \
+            sh -c "pip install -r requirements.txt pytest -q && pytest tests/ -v"
