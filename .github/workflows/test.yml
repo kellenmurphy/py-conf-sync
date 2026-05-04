@@ -7,12 +7,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: dhi.io/python:3.13-debian13-dev
+      credentials:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest
