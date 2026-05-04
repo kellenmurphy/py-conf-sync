@@ -1,4 +1,4 @@
-requests>=2.31.0
+requests>=2.33.1
 markdownify>=0.12.1
 markdown>=3.5.1
 python-dotenv>=1.0.0
