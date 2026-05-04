@@ -1,5 +1,7 @@
 # py-conf-sync
 
+[![Tests](https://github.com/kellenmurphy/py-conf-sync/actions/workflows/test.yml/badge.svg)](https://github.com/kellenmurphy/py-conf-sync/actions/workflows/test.yml)
+
 Technical writers and engineers often face a choice: write docs in Confluence's editor
 (where they live as rich pages, version-controlled by Confluence) or write them in
 Markdown alongside code (where they benefit from git history, PR reviews, and real
