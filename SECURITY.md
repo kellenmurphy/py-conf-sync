@@ -29,7 +29,7 @@ receive a response within **5 business days** acknowledging the report.
 - A description of the vulnerability and its potential impact
 - Steps to reproduce or a proof-of-concept
 - Any relevant configuration (redact credentials)
-- The version of the tool you are running (`docker image inspect` or `git log -1`)
+- The version of the tool you are running (`./csync --version` or `docker image inspect`)
 
 ### What to expect
 
@@ -37,6 +37,13 @@ receive a response within **5 business days** acknowledging the report.
 - An assessment and severity rating within 10 business days
 - A fix and patched image published as promptly as the severity warrants
 - Credit in the release notes if you would like it
+
+## Supply chain
+
+- Dependencies are monitored by Dependabot and updated weekly
+- All merges to `main` require a passing test suite
+- Docker images are published via GitHub Actions with pinned action versions
+- Images are tagged by semver and `latest` tracks the current release
 
 ## Scope
 
