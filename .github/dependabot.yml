@@ -5,6 +5,9 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    groups:
+      github-actions:
+        patterns: ["*"]
 
   - package-ecosystem: "docker"
     directory: "/"
@@ -17,3 +20,6 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    groups:
+      python-deps:
+        patterns: ["*"]
