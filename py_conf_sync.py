@@ -164,7 +164,9 @@ def _replace_code_macro(macro_html: str) -> str:
 
 
 def _code_language_callback(el) -> str | None:
-    for cls in (el.get("class") or []):
+    # markdownify passes the <pre> element; the language class is on the <code> child.
+    code = el.find("code")
+    for cls in (code.get("class") if code else []) or []:
         if cls.startswith("language-"):
             return cls[len("language-"):]
     return None
