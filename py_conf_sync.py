@@ -126,6 +126,15 @@ class ConfluenceClient:
 # ---------------------------------------------------------------------------
 
 _MACRO_RE = re.compile(r"<ac:[^>]+>.*?</ac:[^>]+>|<ac:[^/]*/?>", re.DOTALL)
+_NONHTML_TAG_RE = re.compile(r'<(/?)\s*([a-zA-Z][a-zA-Z0-9_:-]*)(\s[^>]*)?>',  re.DOTALL)
+_KNOWN_HTML_TAGS = frozenset({
+    "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "col",
+    "colgroup", "dd", "del", "dfn", "div", "dl", "dt", "em", "figcaption",
+    "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "ins",
+    "kbd", "li", "mark", "ol", "p", "pre", "q", "s", "samp", "small", "span",
+    "strong", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
+    "tr", "tt", "u", "ul", "var",
+})
 _RI_TAG_RE = re.compile(r"<ri:[^>]+/?>", re.DOTALL)
 _CODE_MACRO_RE = re.compile(
     r'<ac:structured-macro[^>]*ac:name="code"[^>]*>.*?</ac:structured-macro>',
@@ -147,6 +156,39 @@ _TRAILING_BR_RE = re.compile(r'(\s*<br\s*/?>)+(?=\s*</)', re.IGNORECASE)
 # Confluence wraps <li> content in <p> for "loose" lists; strip that wrapping so
 # markdownify produces tight lists with proper nesting instead of blank-line-separated items.
 _LI_P_UNWRAP_RE = re.compile(r'(<li[^>]*>)\s*<p>(.*?)</p>(?=\s*(?:</li>|<ul))', re.DOTALL)
+_AC_IMAGE_RE = re.compile(r'<ac:image([^>]*)>(.*?)</ac:image>', re.DOTALL)
+_RI_ATTACHMENT_FILENAME_RE = re.compile(r'ri:filename="([^"]+)"')
+_RI_URL_VALUE_RE = re.compile(r'ri:value="([^"]+)"')
+# Strip layout wrapper tags but preserve their inner content — the broad
+# _MACRO_RE would otherwise eat everything from <ac:layout> to the first
+# closing ac:* tag, silently discarding all text inside layout sections.
+_AC_LAYOUT_TAG_RE = re.compile(r'</?ac:layout(?:-section|-cell)?[^>]*>', re.DOTALL)
+# Centering via a wrapping <p style="text-align: center;"> is not an attribute
+# on <ac:image> itself. Detect this pattern and promote the alignment so it
+# survives the round-trip encoded in the image title field.
+_CENTERED_IMG_P_RE = re.compile(
+    r'<p\b[^>]*\bstyle="[^"]*text-align:\s*center[^"]*"[^>]*>\s*'
+    r'<ac:image([^>]*)>(.*?</ac:image>)\s*</p>',
+    re.DOTALL | re.IGNORECASE,
+)
+_PANEL_MACRO_RE = re.compile(
+    r'<ac:structured-macro[^>]*\bac:name="(note|info|warning|tip)"[^>]*>'
+    r'.*?<ac:rich-text-body>(.*?)</ac:rich-text-body>'
+    r'.*?</ac:structured-macro>',
+    re.DOTALL,
+)
+# On push: detect GFM-style alert blockquotes and convert back to Confluence panels.
+# Case A: [!TYPE] and body in same <p> (no blank line after the type marker).
+# nl2br converts the newline to <br />, so the separator is <br />\n not \n.
+_PANEL_PUSH_INLINE_RE = re.compile(
+    r'<blockquote>\s*<p>\[!(NOTE|INFO|WARNING|TIP)\]<br\s*/?>\n?(.*?)</p>\s*</blockquote>',
+    re.DOTALL | re.IGNORECASE,
+)
+# Case B: [!TYPE] alone in its own <p>, body in subsequent elements.
+_PANEL_PUSH_BLOCK_RE = re.compile(
+    r'<blockquote>\s*<p>\[!(NOTE|INFO|WARNING|TIP)\]</p>\s*(.*?)\s*</blockquote>',
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def _replace_code_macro(macro_html: str) -> str:
@@ -172,6 +214,63 @@ def _code_language_callback(el) -> str | None:
     return None
 
 
+def _promote_centered_img(m: re.Match) -> str:
+    attrs, rest = m.group(1), m.group(2)
+    if 'ac:align=' not in attrs:
+        attrs += ' ac:align="center"'
+    return f'<ac:image{attrs}>{rest}'
+
+
+def _replace_panel_macro(m: re.Match) -> str:
+    label = m.group(1).upper()
+    body = m.group(2).strip()
+    return f'<blockquote>\n<p>[!{label}]</p>\n{body}\n</blockquote>'
+
+
+def _make_confluence_panel(panel_type: str, body: str) -> str:
+    name = panel_type.lower()
+    return (
+        f'<ac:structured-macro ac:name="{name}" ac:schema-version="1">'
+        f'<ac:rich-text-body>{body}</ac:rich-text-body>'
+        f'</ac:structured-macro>'
+    )
+
+
+def _replace_image_macro(outer_attrs: str, inner: str, base_url: str | None, page_id: str | None) -> str:
+    # Return an <img> tag so markdownify converts it in proper HTML context.
+    # Emitting raw Markdown ![](url) here would merge with adjacent elements.
+    # Confluence display attributes (size, alignment) are encoded in the title
+    # field so they survive the Markdown round-trip and can be restored on push.
+    attach_m = _RI_ATTACHMENT_FILENAME_RE.search(inner)
+    if attach_m:
+        filename = attach_m.group(1)
+        url = (
+            f"{base_url}/download/attachments/{page_id}/{quote(filename, safe='')}"
+            if base_url and page_id else filename
+        )
+        alt = filename
+    else:
+        url_m = _RI_URL_VALUE_RE.search(inner)
+        if not url_m:
+            return ""
+        url = url_m.group(1)
+        alt = url.rsplit("/", 1)[-1].split("?")[0] or "image"
+
+    ac_attrs = {}
+    for attr in ("ac:height", "ac:width", "ac:align", "ac:layout", "ac:thumbnail", "ac:title"):
+        m = re.search(f'{re.escape(attr)}="([^"]+)"', outer_attrs)
+        if m:
+            ac_attrs[attr] = m.group(1)
+
+    escaped_src = html_lib.escape(url, quote=True)
+    escaped_alt = html_lib.escape(alt, quote=True)
+    if ac_attrs:
+        # URL-encode values so spaces in ac:title don't break the space-separated format.
+        title = html_lib.escape(" ".join(f"{k}={quote(v, safe='')}" for k, v in ac_attrs.items()), quote=True)
+        return f'<img src="{escaped_src}" alt="{escaped_alt}" title="{title}" />'
+    return f'<img src="{escaped_src}" alt="{escaped_alt}" />'
+
+
 def _replace_jira_macro(macro_html: str, jira_url: str | None) -> str:
     m = _JIRA_KEY_RE.search(macro_html) or _JIRA_KEY_BARE_RE.search(macro_html)
     if not m:
@@ -182,10 +281,7 @@ def _replace_jira_macro(macro_html: str, jira_url: str | None) -> str:
     return key
 
 
-def storage_to_markdown(storage_html: str, jira_url: str | None = None) -> str:
-    # TODO: add round-trip support for info/note/warning/tip panels
-    #       (ac:structured-macro ac:name="info|note|warning|tip") →
-    #       blockquote with a prefix marker, restored on push.
+def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url: str | None = None, page_id: str | None = None) -> str:
     # TODO: add round-trip support for status badges
     #       (ac:structured-macro ac:name="status") →
     #       inline marker e.g. `[STATUS:colour:label]`, restored on push.
@@ -196,6 +292,10 @@ def storage_to_markdown(storage_html: str, jira_url: str | None = None) -> str:
         return f"[{title}](confluence://page/{quote(title, safe='')})"
 
     cleaned = _AC_LINK_RE.sub(_replace_ac_link, cleaned)
+    cleaned = _PANEL_MACRO_RE.sub(_replace_panel_macro, cleaned)
+    cleaned = _AC_LAYOUT_TAG_RE.sub("", cleaned)
+    cleaned = _CENTERED_IMG_P_RE.sub(_promote_centered_img, cleaned)
+    cleaned = _AC_IMAGE_RE.sub(lambda m: _replace_image_macro(m.group(1), m.group(2), base_url, page_id), cleaned)
     cleaned = _TRAILING_BR_RE.sub("", cleaned)
     cleaned = _LI_P_UNWRAP_RE.sub(r'\1\2', cleaned)
     cleaned = _MACRO_RE.sub("", cleaned)
@@ -211,7 +311,7 @@ def storage_to_markdown(storage_html: str, jira_url: str | None = None) -> str:
     return result.strip()
 
 
-def markdown_to_storage(markdown_text: str) -> str:
+def markdown_to_storage(markdown_text: str, base_url: str | None = None, page_id: str | None = None) -> str:
     try:
         import markdown as mdlib
     except ImportError:
@@ -219,12 +319,66 @@ def markdown_to_storage(markdown_text: str) -> str:
         sys.exit(1)
 
     extensions = ["tables", "fenced_code", "attr_list", "nl2br"]
+    # The Python markdown library does not support CommonMark trailing-backslash
+    # hard line breaks — strip them so they don't appear as literal \ in Confluence.
+    # Lines where \ is the only non-whitespace content (e.g. "    \") must become
+    # truly empty lines, not spaces-only lines; otherwise the markdown library
+    # mistakes the next indented line for a code block inside a list.
+    markdown_text = re.sub(r'^[ \t]+\\[ \t]*\n', '\n', markdown_text, flags=re.MULTILINE)
+    markdown_text = re.sub(r'\\[ \t]*\n', '\n', markdown_text)
+    # For two-digit (and higher) numbered list items, the required continuation
+    # indentation (4+ spaces) equals the 4-space code block threshold. A blank
+    # line before a 4+-space-indented image breaks the list out of <ol> context
+    # and wraps the image in a code macro. Collapse those blank lines so the
+    # image stays inline as list continuation (code blocks still need a blank
+    # line, so this only affects the image-after-blank-line pattern).
+    markdown_text = re.sub(
+        r'(\d+\. [^\n]+)\n\n([ ]{4,}!\[)',
+        r'\1\n\2',
+        markdown_text,
+    )
     # tab_length=2 matches markdownify's 2-space list indentation so nested
     # lists survive the round-trip without being flattened.
     html = mdlib.markdown(markdown_text, extensions=extensions, tab_length=2)
+    html = _escape_nonhtml_tags(html)
 
     html = re.sub(r"<br>", "<br />", html)
     html = re.sub(r"<hr>", "<hr />", html)
+
+    def img_to_ac_image(m):
+        tag = m.group(0)
+        src_m = re.search(r'\bsrc="([^"]+)"', tag)
+        if not src_m:
+            return tag
+        src = src_m.group(1)
+        title_m = re.search(r'\btitle="([^"]*)"', tag)
+        title = html_lib.unescape(title_m.group(1)) if title_m else ""
+
+        # Restore Confluence image display attributes encoded during pull.
+        # Values were URL-encoded to survive spaces (e.g. in ac:title).
+        ac_attrs = {}
+        for part in title.split():
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k.startswith("ac:"):
+                    ac_attrs[k] = unquote(v)
+        attr_str = "".join(f' {k}="{html_lib.escape(v, quote=True)}"' for k, v in ac_attrs.items())
+
+        if base_url and page_id:
+            attach_prefix = f"{base_url}/download/attachments/{page_id}/"
+            if src.startswith(attach_prefix):
+                filename = unquote(src[len(attach_prefix):])
+                return f'<ac:image{attr_str}><ri:attachment ri:filename="{html_lib.escape(filename, quote=True)}" /></ac:image>'
+        return f'<ac:image{attr_str}><ri:url ri:value="{html_lib.escape(src, quote=True)}" /></ac:image>'
+
+    html = re.sub(r'<img\s[^>]*/>', img_to_ac_image, html)
+
+    html = _PANEL_PUSH_INLINE_RE.sub(
+        lambda m: _make_confluence_panel(m.group(1), f"<p>{m.group(2)}</p>"), html
+    )
+    html = _PANEL_PUSH_BLOCK_RE.sub(
+        lambda m: _make_confluence_panel(m.group(1), m.group(2)), html
+    )
 
     def replace_pre(m):
         inner = m.group(1)
@@ -267,6 +421,20 @@ def markdown_to_storage(markdown_text: str) -> str:
 
 def _unescape_html(text: str) -> str:
     return html_lib.unescape(text)
+
+
+def _escape_nonhtml_tags(html: str) -> str:
+    """Escape any HTML-looking tags that aren't standard elements.
+    Prevents literal placeholders like <computingId> in markdown from being
+    passed through as raw HTML into Confluence storage, which breaks XHTML parsing.
+    """
+    def _check(m):
+        tag = m.group(2).lower()
+        if tag in _KNOWN_HTML_TAGS:
+            return m.group(0)
+        escaped = m.group(0).replace("<", "&lt;").replace(">", "&gt;")
+        return escaped
+    return _NONHTML_TAG_RE.sub(_check, html)
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +593,12 @@ def cmd_pull(args):
             print(f"\n[warn] --debug dumps raw page content — do not share output publicly")
             print(f"\n--- raw storage: {page_id} ---\n{storage_body}\n--- end ---\n")
 
-        markdown_text = storage_to_markdown(storage_body, jira_url=config.get("jira_url"))
+        markdown_text = storage_to_markdown(
+            storage_body,
+            jira_url=config.get("jira_url"),
+            base_url=config.get("confluence_url"),
+            page_id=page_id,
+        )
 
         fm_data = {
             "confluence_page_id": str(page_id),
@@ -491,7 +664,12 @@ def cmd_push(args):
                 continue
 
         body_for_conversion = re.sub(r"^#\s+.+\n", "", body, count=1).strip()
-        storage_body = markdown_to_storage(body_for_conversion)
+        body_for_conversion = _resolve_relative_md_links(body_for_conversion, file_path, config)
+        storage_body = markdown_to_storage(
+            body_for_conversion,
+            base_url=config.get("confluence_url"),
+            page_id=page_id,
+        )
         new_version = remote_version + 1
 
         if args.dry_run:
@@ -583,6 +761,66 @@ def cmd_scan(args):
     if new_count:
         print(f"\nEdit {output_path} to add page_id values, then:")
         print(f"  ./csync --config {output_path} pull")
+
+
+# ---------------------------------------------------------------------------
+# Relative link resolution
+# ---------------------------------------------------------------------------
+
+_MD_LINK_RE = re.compile(r'(?<!!)\[([^\]]+)\]\(([^\s\)]+)([^\)]*)\)')
+
+
+def _resolve_relative_md_links(body: str, current_file: Path, config: dict) -> str:
+    """Replace relative .md links that point to tracked pages with Confluence links.
+
+    A relative link like [text](ci/other.md) is resolved against the current
+    file's directory, matched against the config's page registry, then replaced
+    with either a confluence://page/<title> link (rendered as an <ac:link>
+    internal link in Confluence) or a direct page-ID URL when no title is known.
+    """
+    config_dir = Path(config["_config_dir"]).resolve()
+    base_url = config.get("confluence_url", "").rstrip("/")
+
+    # Build a lookup keyed on the normalized path relative to config_dir.
+    pages_by_norm = {}
+    for entry in config.get("pages", []):
+        if not entry.get("page_id"):
+            continue
+        fp = (config_dir / entry["file_path"]).resolve()
+        try:
+            key = str(fp.relative_to(config_dir))
+        except ValueError:
+            continue
+        pages_by_norm[key] = entry
+
+    current_dir = current_file.resolve().parent
+
+    def _replace(m):
+        link_text, target, rest = m.group(1), m.group(2), m.group(3)
+        if target.startswith(("http://", "https://", "#", "mailto:", "confluence://", "/")):
+            return m.group(0)
+        if not target.lower().endswith(".md"):
+            return m.group(0)
+
+        resolved = (current_dir / target).resolve()
+        try:
+            key = str(resolved.relative_to(config_dir))
+        except ValueError:
+            return m.group(0)
+
+        entry = pages_by_norm.get(key)
+        if not entry:
+            return m.group(0)
+
+        title = entry.get("title")
+        pid = str(entry["page_id"])
+        if title:
+            return f"[{link_text}](confluence://page/{quote(title, safe='')})"
+        if base_url:
+            return f"[{link_text}]({base_url}/pages/{pid})"
+        return m.group(0)
+
+    return _MD_LINK_RE.sub(_replace, body)
 
 
 # ---------------------------------------------------------------------------
