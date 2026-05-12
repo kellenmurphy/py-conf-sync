@@ -23,4 +23,11 @@ jobs:
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             dhi.io/python:3.13-debian13-dev \
-            sh -c "pip install -r requirements.txt pytest pytest-cov -q && pytest tests/ -v --cov=py_conf_sync --cov-report=term-missing --cov-fail-under=44"
+            sh -c "pip install -r requirements.txt pytest pytest-cov -q && pytest tests/ -v --cov=py_conf_sync --cov-report=term-missing --cov-report=xml --cov-fail-under=55"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: false

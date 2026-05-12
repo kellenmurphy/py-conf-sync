@@ -1,4 +1,7 @@
+import argparse
+import json
 import pytest
+import yaml
 from pathlib import Path
 from py_conf_sync import (
     storage_to_markdown,
@@ -6,6 +9,16 @@ from py_conf_sync import (
     _parse_front_matter,
     _write_front_matter,
     _resolve_relative_md_links,
+    _replace_code_macro,
+    _replace_noformat_macro,
+    _replace_jira_macro,
+    _replace_image_macro,
+    _ensure_gitignore,
+    load_config,
+    save_config,
+    cmd_init,
+    cmd_add,
+    cmd_remove,
 )
 
 
@@ -677,3 +690,198 @@ class TestFrontMatter:
         parsed_fm, parsed_body = _parse_front_matter(result)
         assert parsed_fm["title"] == 'My "Quoted" Title'
         assert parsed_body == body
+
+
+class TestConversionHelperEdgeCases:
+    def test_replace_code_macro_no_body_returns_empty(self):
+        result = _replace_code_macro('<ac:structured-macro ac:name="code"></ac:structured-macro>')
+        assert result == ""
+
+    def test_replace_noformat_macro_no_body_returns_empty(self):
+        result = _replace_noformat_macro('<ac:structured-macro ac:name="noformat"></ac:structured-macro>')
+        assert result == ""
+
+    def test_replace_jira_macro_no_key_returns_empty(self):
+        result = _replace_jira_macro(
+            '<ac:structured-macro ac:name="jira"><ac:parameter ac:name="other">value</ac:parameter></ac:structured-macro>',
+            None,
+        )
+        assert result == ""
+
+    def test_replace_image_macro_no_url_returns_empty(self):
+        result = _replace_image_macro("", "<p>no attachment or url here</p>", None, None)
+        assert result == ""
+
+    def test_replace_pre_no_language_class(self):
+        # Fenced code block with no language produces <pre><code>...</code></pre> (no class).
+        # This hits the else branch in replace_pre where lang defaults to "none".
+        result = markdown_to_storage("```\nplain code here\n```")
+        assert 'ac:name="code"' in result
+        assert "plain code here" in result
+
+
+class TestEnsureGitignore:
+    def test_creates_new_gitignore(self, tmp_path):
+        gp = tmp_path / ".gitignore"
+        _ensure_gitignore(gp, [".csync.env"])
+        assert ".csync.env" in gp.read_text()
+
+    def test_appends_to_existing_gitignore(self, tmp_path):
+        gp = tmp_path / ".gitignore"
+        gp.write_text("node_modules/\n")
+        _ensure_gitignore(gp, [".csync.env"])
+        content = gp.read_text()
+        assert "node_modules/" in content
+        assert ".csync.env" in content
+
+    def test_skips_already_present_entries(self, tmp_path, capsys):
+        gp = tmp_path / ".gitignore"
+        gp.write_text(".csync.env\n")
+        _ensure_gitignore(gp, [".csync.env"])
+        captured = capsys.readouterr()
+        assert "Added" not in captured.out
+
+    def test_adds_newline_before_entries_when_no_trailing_newline(self, tmp_path):
+        gp = tmp_path / ".gitignore"
+        gp.write_text("existing")
+        _ensure_gitignore(gp, [".csync.env"])
+        content = gp.read_text()
+        assert "existing\n" in content
+
+
+class TestCmdInit:
+    def test_creates_yaml_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        assert config_path.exists()
+        data = yaml.safe_load(config_path.read_text())
+        assert "confluence_url" in data
+        assert "pages" in data
+
+    def test_creates_json_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.json"
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        assert config_path.exists()
+        data = json.loads(config_path.read_text())
+        assert "confluence_url" in data
+
+    def test_skips_existing_without_force(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        config_path.write_text("confluence_url: https://old.example.com\n")
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        captured = capsys.readouterr()
+        assert "skip" in captured.out
+        assert "old.example.com" in config_path.read_text()
+
+    def test_overwrites_with_force(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        config_path.write_text("confluence_url: https://old.example.com\n")
+        args = argparse.Namespace(_config_path=config_path, force=True)
+        cmd_init(args)
+        data = yaml.safe_load(config_path.read_text())
+        assert data["confluence_url"] == "https://confluence.example.com"
+
+    def test_creates_gitignore(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        gitignore = tmp_path / ".gitignore"
+        assert gitignore.exists()
+        assert ".csync.env" in gitignore.read_text()
+
+
+class TestCmdAdd:
+    def _make_config(self, tmp_path, pages=None):
+        path = tmp_path / ".py-conf-sync.config.yaml"
+        save_config({"confluence_url": "https://confluence.example.com", "pages": pages or []}, path)
+        return path
+
+    def test_adds_page_entry(self, tmp_path):
+        config_path = self._make_config(tmp_path)
+        args = argparse.Namespace(_config_path=config_path, page_id="99999", file_path="docs/new.md", title=None)
+        cmd_add(args)
+        config = load_config(config_path)
+        assert any(str(e["page_id"]) == "99999" for e in config["pages"])
+
+    def test_adds_page_with_title(self, tmp_path):
+        config_path = self._make_config(tmp_path)
+        args = argparse.Namespace(_config_path=config_path, page_id="88888", file_path="docs/titled.md", title="My Title")
+        cmd_add(args)
+        config = load_config(config_path)
+        entry = next(e for e in config["pages"] if str(e["page_id"]) == "88888")
+        assert entry["title"] == "My Title"
+
+    def test_skips_duplicate_page_id(self, tmp_path, capsys):
+        config_path = self._make_config(tmp_path, [{"page_id": "77777", "file_path": "docs/existing.md"}])
+        args = argparse.Namespace(_config_path=config_path, page_id="77777", file_path="docs/other.md", title=None)
+        cmd_add(args)
+        captured = capsys.readouterr()
+        assert "skip" in captured.out
+        config = load_config(config_path)
+        assert len([e for e in config["pages"] if str(e["page_id"]) == "77777"]) == 1
+
+
+class TestCmdRemove:
+    def _make_config(self, tmp_path, pages):
+        path = tmp_path / ".py-conf-sync.config.yaml"
+        save_config({"confluence_url": "https://confluence.example.com", "pages": pages}, path)
+        return path
+
+    def test_removes_existing_page(self, tmp_path):
+        config_path = self._make_config(tmp_path, [
+            {"page_id": "11111", "file_path": "docs/a.md"},
+            {"page_id": "22222", "file_path": "docs/b.md"},
+        ])
+        args = argparse.Namespace(_config_path=config_path, page_id="11111")
+        cmd_remove(args)
+        config = load_config(config_path)
+        assert not any(str(e["page_id"]) == "11111" for e in config["pages"])
+        assert any(str(e["page_id"]) == "22222" for e in config["pages"])
+
+    def test_exits_on_missing_page_id(self, tmp_path):
+        config_path = self._make_config(tmp_path, [{"page_id": "11111", "file_path": "docs/a.md"}])
+        args = argparse.Namespace(_config_path=config_path, page_id="99999")
+        with pytest.raises(SystemExit):
+            cmd_remove(args)
+
+
+class TestLoadSaveConfig:
+    def test_load_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("confluence_url: https://example.com\npages: []\n")
+        config = load_config(path)
+        assert config["confluence_url"] == "https://example.com"
+        assert config["_config_dir"] == tmp_path
+
+    def test_load_json(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text('{"confluence_url": "https://example.com", "pages": []}\n')
+        config = load_config(path)
+        assert config["confluence_url"] == "https://example.com"
+
+    def test_save_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        save_config({"confluence_url": "https://example.com", "pages": []}, path)
+        data = yaml.safe_load(path.read_text())
+        assert data["confluence_url"] == "https://example.com"
+        assert "_config_dir" not in data
+
+    def test_save_json(self, tmp_path):
+        path = tmp_path / "config.json"
+        save_config({"confluence_url": "https://example.com", "pages": [], "_config_dir": "/tmp"}, path)
+        data = json.loads(path.read_text())
+        assert data["confluence_url"] == "https://example.com"
+        assert "_config_dir" not in data
+
+    def test_load_missing_config_exits(self, tmp_path):
+        path = tmp_path / "nonexistent.yaml"
+        with pytest.raises(SystemExit):
+            load_config(path)
