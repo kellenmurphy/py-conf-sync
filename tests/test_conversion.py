@@ -395,6 +395,176 @@ class TestPanels:
         assert "Next step" in result[ol_start:]
 
 
+class TestTOC:
+    def test_pull_toc_self_closing(self):
+        storage = '<ac:structured-macro ac:name="toc" ac:schema-version="1" ac:macro-id="abc123" />'
+        result = storage_to_markdown(storage)
+        assert "[TOC]" in result
+
+    def test_pull_toc_does_not_eat_following_content(self):
+        # The self-closing TOC macro must not consume everything up to the next
+        # </ac:structured-macro> — the original data-loss bug.
+        storage = (
+            '<ac:structured-macro ac:name="toc" ac:schema-version="1" ac:macro-id="abc" />'
+            '<h2>Section Heading</h2>'
+            '<p>Paragraph text.</p>'
+            '<ac:structured-macro ac:name="noformat">'
+            '<ac:plain-text-body><![CDATA[some code]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[TOC]" in result
+        assert "Section Heading" in result
+        assert "Paragraph text" in result
+        assert "some code" in result
+
+    def test_push_toc_placeholder(self):
+        result = markdown_to_storage("[TOC]")
+        assert 'ac:name="toc"' in result
+
+    def test_toc_round_trip(self):
+        storage = '<ac:structured-macro ac:name="toc" ac:schema-version="1" />'
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="toc"' in result
+
+
+class TestNoformat:
+    def test_pull_noformat_macro(self):
+        storage = (
+            '<ac:structured-macro ac:name="noformat">'
+            '<ac:plain-text-body><![CDATA[raw text here]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "raw text here" in result
+
+    def test_pull_noformat_with_schema_attrs(self):
+        storage = (
+            '<ac:structured-macro ac:name="noformat" ac:schema-version="1" ac:macro-id="a5d2">'
+            '<ac:plain-text-body><![CDATA[template text]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "template text" in result
+
+    def test_push_noformat_block(self):
+        md = "```noformat\nraw text here\n```"
+        result = markdown_to_storage(md)
+        assert 'ac:name="noformat"' in result
+        assert "raw text here" in result
+        assert "<ac:plain-text-body>" in result
+
+    def test_noformat_round_trip(self):
+        storage = (
+            '<ac:structured-macro ac:name="noformat">'
+            '<ac:plain-text-body><![CDATA[some raw text]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="noformat"' in result
+        assert "some raw text" in result
+
+
+class TestExpand:
+    def test_pull_expand_macro(self):
+        storage = (
+            '<ac:structured-macro ac:name="expand">'
+            '<ac:parameter ac:name="title">Click to expand</ac:parameter>'
+            '<ac:rich-text-body><p>Hidden content here.</p></ac:rich-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[!EXPAND]" in result
+        assert "Click to expand" in result
+        assert "Hidden content here" in result
+
+    def test_pull_expand_with_schema_attrs(self):
+        storage = (
+            '<ac:structured-macro ac:name="expand" ac:schema-version="1" ac:macro-id="abc">'
+            '<ac:parameter ac:name="title">Details</ac:parameter>'
+            '<ac:rich-text-body><p>Detail text.</p></ac:rich-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "Details" in result
+        assert "Detail text" in result
+
+    def test_push_expand_block(self):
+        md = "> [!EXPAND] My Section\n>\n> Some content here."
+        result = markdown_to_storage(md)
+        assert 'ac:name="expand"' in result
+        assert "My Section" in result
+        assert "Some content here" in result
+
+    def test_push_expand_inline(self):
+        md = "> [!EXPAND] My Section\n> Some content here."
+        result = markdown_to_storage(md)
+        assert 'ac:name="expand"' in result
+        assert "My Section" in result
+
+    def test_expand_round_trip(self):
+        storage = (
+            '<ac:structured-macro ac:name="expand">'
+            '<ac:parameter ac:name="title">Details</ac:parameter>'
+            '<ac:rich-text-body><p>Some detail text.</p></ac:rich-text-body>'
+            '</ac:structured-macro>'
+        )
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="expand"' in result
+        assert "Details" in result
+        assert "Some detail text" in result
+
+
+class TestLocalImgDir:
+    def test_pull_uses_local_path_when_file_exists(self, tmp_path):
+        img_dir = tmp_path / "img"
+        img_dir.mkdir()
+        (img_dir / "screenshot.png").write_bytes(b"fake")
+        storage = (
+            '<ac:image ac:width="800">'
+            '<ri:attachment ri:filename="screenshot.png" />'
+            '</ac:image>'
+        )
+        result = storage_to_markdown(
+            storage,
+            base_url="https://confluence.example.com",
+            page_id="123",
+            img_dir=str(img_dir),
+        )
+        assert str(img_dir / "screenshot.png") in result
+        assert "download/attachments" not in result
+
+    def test_pull_falls_back_to_confluence_url_when_missing(self):
+        storage = (
+            '<ac:image>'
+            '<ri:attachment ri:filename="missing.png" />'
+            '</ac:image>'
+        )
+        result = storage_to_markdown(
+            storage,
+            base_url="https://confluence.example.com",
+            page_id="123",
+            img_dir="/tmp/nonexistent_dir_for_csync_test",
+        )
+        assert "download/attachments" in result
+
+    def test_pull_no_img_dir_uses_confluence_url(self):
+        storage = (
+            '<ac:image>'
+            '<ri:attachment ri:filename="fig.png" />'
+            '</ac:image>'
+        )
+        result = storage_to_markdown(
+            storage,
+            base_url="https://confluence.example.com",
+            page_id="123",
+        )
+        assert "download/attachments" in result
+
+
 class TestRoundTrip:
     def test_code_block_indentation(self):
         original = "```yaml\nkey:\n  nested:\n    deep: value\n```"
