@@ -354,7 +354,7 @@ def _replace_jira_macro(macro_html: str, jira_url: str | None) -> str:
     return key
 
 
-def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url: str | None = None, page_id: str | None = None) -> str:
+def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url: str | None = None, page_id: str | None = None, img_dir: str | None = None) -> str:
     # TODO: add round-trip support for status badges
     #       (ac:structured-macro ac:name="status") →
     #       inline marker e.g. `[STATUS:colour:label]`, restored on push.
@@ -371,7 +371,7 @@ def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url
     cleaned = _EXPAND_MACRO_RE.sub(lambda m: _replace_expand_macro(m.group(0)), cleaned)
     cleaned = _AC_LAYOUT_TAG_RE.sub("", cleaned)
     cleaned = _CENTERED_IMG_P_RE.sub(_promote_centered_img, cleaned)
-    cleaned = _AC_IMAGE_RE.sub(lambda m: _replace_image_macro(m.group(1), m.group(2), base_url, page_id), cleaned)
+    cleaned = _AC_IMAGE_RE.sub(lambda m: _replace_image_macro(m.group(1), m.group(2), base_url, page_id, img_dir), cleaned)
     cleaned = _TRAILING_BR_RE.sub("", cleaned)
     cleaned = _LI_P_UNWRAP_RE.sub(r'\1\2', cleaned)
     cleaned = _MACRO_RE.sub("", cleaned)
@@ -691,6 +691,7 @@ def cmd_pull(args):
             jira_url=config.get("jira_url"),
             base_url=config.get("confluence_url"),
             page_id=page_id,
+            img_dir=config.get("img_dir", "img"),
         )
 
         fm_data = {
