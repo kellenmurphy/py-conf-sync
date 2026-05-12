@@ -1,4 +1,7 @@
+import argparse
+import json
 import pytest
+import yaml
 from pathlib import Path
 from py_conf_sync import (
     storage_to_markdown,
@@ -6,6 +9,16 @@ from py_conf_sync import (
     _parse_front_matter,
     _write_front_matter,
     _resolve_relative_md_links,
+    _replace_code_macro,
+    _replace_noformat_macro,
+    _replace_jira_macro,
+    _replace_image_macro,
+    _ensure_gitignore,
+    load_config,
+    save_config,
+    cmd_init,
+    cmd_add,
+    cmd_remove,
 )
 
 
@@ -395,6 +408,176 @@ class TestPanels:
         assert "Next step" in result[ol_start:]
 
 
+class TestTOC:
+    def test_pull_toc_self_closing(self):
+        storage = '<ac:structured-macro ac:name="toc" ac:schema-version="1" ac:macro-id="abc123" />'
+        result = storage_to_markdown(storage)
+        assert "[TOC]" in result
+
+    def test_pull_toc_does_not_eat_following_content(self):
+        # The self-closing TOC macro must not consume everything up to the next
+        # </ac:structured-macro> — the original data-loss bug.
+        storage = (
+            '<ac:structured-macro ac:name="toc" ac:schema-version="1" ac:macro-id="abc" />'
+            '<h2>Section Heading</h2>'
+            '<p>Paragraph text.</p>'
+            '<ac:structured-macro ac:name="noformat">'
+            '<ac:plain-text-body><![CDATA[some code]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[TOC]" in result
+        assert "Section Heading" in result
+        assert "Paragraph text" in result
+        assert "some code" in result
+
+    def test_push_toc_placeholder(self):
+        result = markdown_to_storage("[TOC]")
+        assert 'ac:name="toc"' in result
+
+    def test_toc_round_trip(self):
+        storage = '<ac:structured-macro ac:name="toc" ac:schema-version="1" />'
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="toc"' in result
+
+
+class TestNoformat:
+    def test_pull_noformat_macro(self):
+        storage = (
+            '<ac:structured-macro ac:name="noformat">'
+            '<ac:plain-text-body><![CDATA[raw text here]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "raw text here" in result
+
+    def test_pull_noformat_with_schema_attrs(self):
+        storage = (
+            '<ac:structured-macro ac:name="noformat" ac:schema-version="1" ac:macro-id="a5d2">'
+            '<ac:plain-text-body><![CDATA[template text]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "template text" in result
+
+    def test_push_noformat_block(self):
+        md = "```noformat\nraw text here\n```"
+        result = markdown_to_storage(md)
+        assert 'ac:name="noformat"' in result
+        assert "raw text here" in result
+        assert "<ac:plain-text-body>" in result
+
+    def test_noformat_round_trip(self):
+        storage = (
+            '<ac:structured-macro ac:name="noformat">'
+            '<ac:plain-text-body><![CDATA[some raw text]]></ac:plain-text-body>'
+            '</ac:structured-macro>'
+        )
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="noformat"' in result
+        assert "some raw text" in result
+
+
+class TestExpand:
+    def test_pull_expand_macro(self):
+        storage = (
+            '<ac:structured-macro ac:name="expand">'
+            '<ac:parameter ac:name="title">Click to expand</ac:parameter>'
+            '<ac:rich-text-body><p>Hidden content here.</p></ac:rich-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[!EXPAND]" in result
+        assert "Click to expand" in result
+        assert "Hidden content here" in result
+
+    def test_pull_expand_with_schema_attrs(self):
+        storage = (
+            '<ac:structured-macro ac:name="expand" ac:schema-version="1" ac:macro-id="abc">'
+            '<ac:parameter ac:name="title">Details</ac:parameter>'
+            '<ac:rich-text-body><p>Detail text.</p></ac:rich-text-body>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "Details" in result
+        assert "Detail text" in result
+
+    def test_push_expand_block(self):
+        md = "> [!EXPAND] My Section\n>\n> Some content here."
+        result = markdown_to_storage(md)
+        assert 'ac:name="expand"' in result
+        assert "My Section" in result
+        assert "Some content here" in result
+
+    def test_push_expand_inline(self):
+        md = "> [!EXPAND] My Section\n> Some content here."
+        result = markdown_to_storage(md)
+        assert 'ac:name="expand"' in result
+        assert "My Section" in result
+
+    def test_expand_round_trip(self):
+        storage = (
+            '<ac:structured-macro ac:name="expand">'
+            '<ac:parameter ac:name="title">Details</ac:parameter>'
+            '<ac:rich-text-body><p>Some detail text.</p></ac:rich-text-body>'
+            '</ac:structured-macro>'
+        )
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="expand"' in result
+        assert "Details" in result
+        assert "Some detail text" in result
+
+
+class TestLocalImgDir:
+    def test_pull_uses_local_path_when_file_exists(self, tmp_path):
+        img_dir = tmp_path / "img"
+        img_dir.mkdir()
+        (img_dir / "screenshot.png").write_bytes(b"fake")
+        storage = (
+            '<ac:image ac:width="800">'
+            '<ri:attachment ri:filename="screenshot.png" />'
+            '</ac:image>'
+        )
+        result = storage_to_markdown(
+            storage,
+            base_url="https://confluence.example.com",
+            page_id="123",
+            img_dir=str(img_dir),
+        )
+        assert str(img_dir / "screenshot.png") in result
+        assert "download/attachments" not in result
+
+    def test_pull_falls_back_to_confluence_url_when_missing(self):
+        storage = (
+            '<ac:image>'
+            '<ri:attachment ri:filename="missing.png" />'
+            '</ac:image>'
+        )
+        result = storage_to_markdown(
+            storage,
+            base_url="https://confluence.example.com",
+            page_id="123",
+            img_dir="/tmp/nonexistent_dir_for_csync_test",
+        )
+        assert "download/attachments" in result
+
+    def test_pull_no_img_dir_uses_confluence_url(self):
+        storage = (
+            '<ac:image>'
+            '<ri:attachment ri:filename="fig.png" />'
+            '</ac:image>'
+        )
+        result = storage_to_markdown(
+            storage,
+            base_url="https://confluence.example.com",
+            page_id="123",
+        )
+        assert "download/attachments" in result
+
+
 class TestRoundTrip:
     def test_code_block_indentation(self):
         original = "```yaml\nkey:\n  nested:\n    deep: value\n```"
@@ -507,3 +690,198 @@ class TestFrontMatter:
         parsed_fm, parsed_body = _parse_front_matter(result)
         assert parsed_fm["title"] == 'My "Quoted" Title'
         assert parsed_body == body
+
+
+class TestConversionHelperEdgeCases:
+    def test_replace_code_macro_no_body_returns_empty(self):
+        result = _replace_code_macro('<ac:structured-macro ac:name="code"></ac:structured-macro>')
+        assert result == ""
+
+    def test_replace_noformat_macro_no_body_returns_empty(self):
+        result = _replace_noformat_macro('<ac:structured-macro ac:name="noformat"></ac:structured-macro>')
+        assert result == ""
+
+    def test_replace_jira_macro_no_key_returns_empty(self):
+        result = _replace_jira_macro(
+            '<ac:structured-macro ac:name="jira"><ac:parameter ac:name="other">value</ac:parameter></ac:structured-macro>',
+            None,
+        )
+        assert result == ""
+
+    def test_replace_image_macro_no_url_returns_empty(self):
+        result = _replace_image_macro("", "<p>no attachment or url here</p>", None, None)
+        assert result == ""
+
+    def test_replace_pre_no_language_class(self):
+        # Fenced code block with no language produces <pre><code>...</code></pre> (no class).
+        # This hits the else branch in replace_pre where lang defaults to "none".
+        result = markdown_to_storage("```\nplain code here\n```")
+        assert 'ac:name="code"' in result
+        assert "plain code here" in result
+
+
+class TestEnsureGitignore:
+    def test_creates_new_gitignore(self, tmp_path):
+        gp = tmp_path / ".gitignore"
+        _ensure_gitignore(gp, [".csync.env"])
+        assert ".csync.env" in gp.read_text()
+
+    def test_appends_to_existing_gitignore(self, tmp_path):
+        gp = tmp_path / ".gitignore"
+        gp.write_text("node_modules/\n")
+        _ensure_gitignore(gp, [".csync.env"])
+        content = gp.read_text()
+        assert "node_modules/" in content
+        assert ".csync.env" in content
+
+    def test_skips_already_present_entries(self, tmp_path, capsys):
+        gp = tmp_path / ".gitignore"
+        gp.write_text(".csync.env\n")
+        _ensure_gitignore(gp, [".csync.env"])
+        captured = capsys.readouterr()
+        assert "Added" not in captured.out
+
+    def test_adds_newline_before_entries_when_no_trailing_newline(self, tmp_path):
+        gp = tmp_path / ".gitignore"
+        gp.write_text("existing")
+        _ensure_gitignore(gp, [".csync.env"])
+        content = gp.read_text()
+        assert "existing\n" in content
+
+
+class TestCmdInit:
+    def test_creates_yaml_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        assert config_path.exists()
+        data = yaml.safe_load(config_path.read_text())
+        assert "confluence_url" in data
+        assert "pages" in data
+
+    def test_creates_json_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.json"
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        assert config_path.exists()
+        data = json.loads(config_path.read_text())
+        assert "confluence_url" in data
+
+    def test_skips_existing_without_force(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        config_path.write_text("confluence_url: https://old.example.com\n")
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        captured = capsys.readouterr()
+        assert "skip" in captured.out
+        assert "old.example.com" in config_path.read_text()
+
+    def test_overwrites_with_force(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        config_path.write_text("confluence_url: https://old.example.com\n")
+        args = argparse.Namespace(_config_path=config_path, force=True)
+        cmd_init(args)
+        data = yaml.safe_load(config_path.read_text())
+        assert data["confluence_url"] == "https://confluence.example.com"
+
+    def test_creates_gitignore(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config_path = tmp_path / ".py-conf-sync.config.yaml"
+        args = argparse.Namespace(_config_path=config_path, force=False)
+        cmd_init(args)
+        gitignore = tmp_path / ".gitignore"
+        assert gitignore.exists()
+        assert ".csync.env" in gitignore.read_text()
+
+
+class TestCmdAdd:
+    def _make_config(self, tmp_path, pages=None):
+        path = tmp_path / ".py-conf-sync.config.yaml"
+        save_config({"confluence_url": "https://confluence.example.com", "pages": pages or []}, path)
+        return path
+
+    def test_adds_page_entry(self, tmp_path):
+        config_path = self._make_config(tmp_path)
+        args = argparse.Namespace(_config_path=config_path, page_id="99999", file_path="docs/new.md", title=None)
+        cmd_add(args)
+        config = load_config(config_path)
+        assert any(str(e["page_id"]) == "99999" for e in config["pages"])
+
+    def test_adds_page_with_title(self, tmp_path):
+        config_path = self._make_config(tmp_path)
+        args = argparse.Namespace(_config_path=config_path, page_id="88888", file_path="docs/titled.md", title="My Title")
+        cmd_add(args)
+        config = load_config(config_path)
+        entry = next(e for e in config["pages"] if str(e["page_id"]) == "88888")
+        assert entry["title"] == "My Title"
+
+    def test_skips_duplicate_page_id(self, tmp_path, capsys):
+        config_path = self._make_config(tmp_path, [{"page_id": "77777", "file_path": "docs/existing.md"}])
+        args = argparse.Namespace(_config_path=config_path, page_id="77777", file_path="docs/other.md", title=None)
+        cmd_add(args)
+        captured = capsys.readouterr()
+        assert "skip" in captured.out
+        config = load_config(config_path)
+        assert len([e for e in config["pages"] if str(e["page_id"]) == "77777"]) == 1
+
+
+class TestCmdRemove:
+    def _make_config(self, tmp_path, pages):
+        path = tmp_path / ".py-conf-sync.config.yaml"
+        save_config({"confluence_url": "https://confluence.example.com", "pages": pages}, path)
+        return path
+
+    def test_removes_existing_page(self, tmp_path):
+        config_path = self._make_config(tmp_path, [
+            {"page_id": "11111", "file_path": "docs/a.md"},
+            {"page_id": "22222", "file_path": "docs/b.md"},
+        ])
+        args = argparse.Namespace(_config_path=config_path, page_id="11111")
+        cmd_remove(args)
+        config = load_config(config_path)
+        assert not any(str(e["page_id"]) == "11111" for e in config["pages"])
+        assert any(str(e["page_id"]) == "22222" for e in config["pages"])
+
+    def test_exits_on_missing_page_id(self, tmp_path):
+        config_path = self._make_config(tmp_path, [{"page_id": "11111", "file_path": "docs/a.md"}])
+        args = argparse.Namespace(_config_path=config_path, page_id="99999")
+        with pytest.raises(SystemExit):
+            cmd_remove(args)
+
+
+class TestLoadSaveConfig:
+    def test_load_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("confluence_url: https://example.com\npages: []\n")
+        config = load_config(path)
+        assert config["confluence_url"] == "https://example.com"
+        assert config["_config_dir"] == tmp_path
+
+    def test_load_json(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text('{"confluence_url": "https://example.com", "pages": []}\n')
+        config = load_config(path)
+        assert config["confluence_url"] == "https://example.com"
+
+    def test_save_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        save_config({"confluence_url": "https://example.com", "pages": []}, path)
+        data = yaml.safe_load(path.read_text())
+        assert data["confluence_url"] == "https://example.com"
+        assert "_config_dir" not in data
+
+    def test_save_json(self, tmp_path):
+        path = tmp_path / "config.json"
+        save_config({"confluence_url": "https://example.com", "pages": [], "_config_dir": "/tmp"}, path)
+        data = json.loads(path.read_text())
+        assert data["confluence_url"] == "https://example.com"
+        assert "_config_dir" not in data
+
+    def test_load_missing_config_exits(self, tmp_path):
+        path = tmp_path / "nonexistent.yaml"
+        with pytest.raises(SystemExit):
+            load_config(path)

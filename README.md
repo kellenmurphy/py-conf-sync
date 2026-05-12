@@ -1,6 +1,7 @@
 # py-conf-sync
 
 [![Tests](https://github.com/kellenmurphy/py-conf-sync/actions/workflows/test.yml/badge.svg)](https://github.com/kellenmurphy/py-conf-sync/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/kellenmurphy/py-conf-sync/branch/main/graph/badge.svg)](https://codecov.io/gh/kellenmurphy/py-conf-sync)
 
 Technical writers and engineers often face a choice: write docs in Confluence's editor
 (where they live as rich pages, version-controlled by Confluence) or write them in
@@ -200,10 +201,12 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Headings | `#` / `##` / etc. | `<h1>` – `<h6>` |
 | Paragraphs, bold, italic, inline code | Standard Markdown | `<p>`, `<strong>`, `<em>`, `<code>` |
 | Fenced code blocks (with language) | ` ```python ``` ` | `ac:structured-macro ac:name="code"` with `language` parameter |
-| Fenced code blocks (no language) | ` ``` ``` ` | `ac:structured-macro ac:name="code"` with `language=none`; also handles Confluence `noformat` macro on pull |
+| Fenced code blocks (no language / noformat) | ` ```noformat ``` ` | `ac:structured-macro ac:name="noformat"` |
+| Table of contents | `[TOC]` | `ac:structured-macro ac:name="toc"` |
+| Collapsible expand sections | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` |
 | Tables | GFM pipe tables | `<table class="wrapped">` |
 | Ordered and unordered lists (nested) | `1.` / `-` with 2-space indent | `<ol>` / `<ul>` |
-| Attached images (with size, alignment, caption) | `![filename](confluence-url "ac:width=750 ac:align=center ac:title=...")` | `ac:image` + `ri:attachment` with all display attributes restored |
+| Attached images (with size, alignment, caption) | `![filename](img/filename "ac:width=750 ac:align=center ac:title=...")` | `ac:image` + `ri:attachment` with all display attributes restored |
 | External images | `![alt](https://...)` | `ac:image` + `ri:url` |
 | Info / Note / Warning / Tip panels | `> [!NOTE]` / `> [!INFO]` / `> [!WARNING]` / `> [!TIP]` | `ac:structured-macro ac:name="note\|info\|warning\|tip"` |
 | Jira issue links | `[KEY-123](jira_url/browse/KEY-123)` | `ac:structured-macro ac:name="jira"` |
@@ -212,12 +215,45 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Blockquotes | `>` | `<blockquote>` |
 | Horizontal rules | `---` | `<hr />` |
 
-### Pull-only (converted on pull, not restored on push)
+### Local image attachments
 
-| Feature | What you get in Markdown |
-|---|---|
-| Confluence layout columns (`ac:layout`) | Layout wrapper stripped; content preserved inline |
-| `noformat` macro | Fenced code block with no language |
+If your repo has an `img/` directory containing attachment images, py-conf-sync
+handles them automatically in both directions:
+
+- **On pull**: if `img/{filename}` exists locally, the Markdown image reference
+  uses the relative path (`img/filename`) rather than the Confluence download URL,
+  so images render locally without Confluence access.
+- **On push**: local image paths are uploaded as Confluence page attachments
+  before the page body is pushed. New and updated images are handled; existing
+  attachments with the same filename are replaced.
+
+The local image directory defaults to `img/` and can be changed in config:
+
+```yaml
+img_dir: assets/images
+```
+
+### Known round-trip limitations
+
+- **Expand block code**: Code inside a collapsible expand section is stored by
+  Confluence as a `code` macro. On pull, this renders as a fenced code block
+  (`` ``` ``) rather than 4-space indented Markdown. The content is preserved;
+  only the formatting style differs. Subsequent round-trips are stable.
+
+- **Numbered lists split by block macros**: A `noformat` or other block macro
+  between list items creates two separate `<ol>` elements in Confluence storage.
+  Each list restarts at 1, so items after the break will appear renumbered on pull.
+  This is stable after the first push with the renumbered list.
+
+- **Push is full-replace.** The entire page body is replaced on each push. Do not use
+  this on pages that are actively co-edited in Confluence.
+
+- **First push of an existing Confluence page will show a large diff.** The storage
+  format is normalised to match what this tool produces. Subsequent pushes of small
+  changes will show only those changes.
+
+- **Version conflict detection is optimistic.** If two people edit the same local file
+  and push, the last writer wins.
 
 ### Not yet supported (planned)
 
@@ -229,25 +265,10 @@ Confluence will render correctly, and pulling that page back produces the same M
 
 | Feature | Notes |
 |---|---|
-| Attachment upload | Images are linked by URL; attachments are not uploaded/downloaded |
 | User mentions (`@user`) | Stripped on pull |
 | Page includes | Stripped on pull |
-| Table of contents macro | Stripped on pull |
 | Anchor macros | Stripped on pull |
 | All other `ac:*` macros | Stripped on pull |
-
-### General limitations
-
-- **Push is full-replace.** The entire page body is replaced on each push. Do not use
-  this on pages that are actively co-edited in Confluence.
-- **First push of an existing Confluence page will show a large diff.** The storage
-  format is normalised to match what this tool produces. Subsequent pushes of small
-  changes will show only those changes.
-- **Version conflict detection is optimistic.** If two people edit the same local file
-  and push, the last writer wins.
-- **Images in two-digit (10+) numbered list items.** Confluence uses trailing `\` hard
-  line breaks to separate list item text from continuation images. On push, these are
-  normalised so images render correctly in Confluence rather than appearing as code blocks.
 
 ## Credentials
 

@@ -1,0 +1,173 @@
+# CLAUDE.md
+
+This file provides context for Claude Code when working in this project.
+
+## What this project does
+
+`py_conf_sync.py` is a single-file CLI tool that syncs Confluence Data Center pages
+with Markdown files in a git repository. It pulls pages down from Confluence (converting
+storage format to Markdown), allows local editing, then pushes changes back (converting
+Markdown back to Confluence storage format).
+
+This is a real, actively-used tool. It is deployed at the University of Virginia to
+keep Identity Services KB articles in a git repository while publishing to Confluence.
+It runs in Docker via the `csync` wrapper, has a published image on GHCR, and CI
+via GitHub Actions.
+
+## Project layout
+
+```
+py_conf_sync.py                    # Entire tool — CLI, API client, format conversion, all commands
+csync                              # Docker wrapper — use this instead of calling py_conf_sync.py directly
+.py-conf-sync.config.example.yaml # Example config — copy to .py-conf-sync.config.yaml and fill in values
+.csync.env.example                 # Credential template — copy to ~/.csync.env and fill in values
+requirements.txt                   # Python dependencies
+tests/                             # pytest test suite
+Dockerfile                         # Uses Docker Hardened Images (dhi.io/python:3.13)
+```
+
+The tool runs as a plain script — no `setup.py`/`pyproject.toml`, no packaging. The Docker
+wrapper handles dependencies.
+
+## Key architecture
+
+Everything lives in `py_conf_sync.py`. The main sections are:
+
+- **`ConfluenceClient`** — thin `requests` wrapper around the Confluence REST API.
+  Three methods: `get_page()`, `update_page()`, and `upload_attachment()`. Auth is
+  either a PAT Bearer token or basic auth, loaded from `.env` via `python-dotenv`.
+
+- **`storage_to_markdown()`** — converts Confluence storage format (XHTML + `ac:*`/`ri:*`
+  macros) to Markdown. Named macro patterns are applied in order before markdownify runs.
+  Many macros have full round-trip support; unknown macros are stripped by `_MACRO_RE`.
+
+- **`markdown_to_storage()`** — converts Markdown back to Confluence storage format.
+  Uses the `markdown` library to get HTML, then patches it for XHTML compatibility and
+  converts known Markdown constructs back to `ac:structured-macro` elements.
+
+- **Front-matter** — every pulled file gets a YAML front-matter block containing
+  `confluence_page_id`, `confluence_version`, and `title`. The version is used on push
+  for optimistic conflict detection.
+
+- **Commands**: `init`, `add`, `remove`, `pull`, `push`, `status`, `scan` — each is a
+  `cmd_*` function dispatched from `main()` via argparse.
+
+## Macro round-trip support
+
+### Self-closing macro regex pattern
+
+Confluence stores bodyless macros (e.g. `toc`) as self-closing XML tags:
+`<ac:structured-macro ac:name="toc" ac:schema-version="1" ac:macro-id="..." />`.
+
+All named macro patterns use `(?:[^/>]|/(?!>))*` (not `[^>]*`) for the final
+attribute section before the `(?:/>|>...)` alternation. Using `[^>]*` causes greedy
+matching to consume the `/` in `/>`, leaving only `>` for the alternation, which then
+matches the `>.*?</ac:structured-macro>` branch and eats all subsequent document content
+up to the next closing macro tag.
+
+The `_MACRO_RE` catch-all uses a backreference `</\1>` so it only strips same-type
+open/close pairs and cannot consume content across tag boundaries.
+
+### Supported macros
+
+| Macro | Pull | Push | Notes |
+|---|---|---|---|
+| `code` | ` ```lang ``` ` fenced block | `ac:structured-macro ac:name="code"` | Full round-trip |
+| `noformat` | ` ```noformat ``` ` fenced block | `ac:structured-macro ac:name="noformat"` | Full round-trip |
+| `toc` | `[TOC]` placeholder | `ac:structured-macro ac:name="toc"` | Full round-trip |
+| `expand` | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` | Full round-trip; code inside expand becomes fenced on pull |
+| `note`/`info`/`warning`/`tip` | `> [!NOTE]` etc. GFM alerts | `ac:structured-macro ac:name="note\|info\|..."` | Full round-trip |
+| `jira` | `[KEY-123](jira_url/browse/KEY-123)` | `ac:structured-macro ac:name="jira"` | Full round-trip |
+| `ac:image` | `![filename](url "ac:attrs")` | `ac:image` + `ri:attachment` or `ri:url` | Full round-trip with size/alignment/title |
+| `ac:link` | `[Title](confluence://page/Title)` | `ac:link` + `ri:page` | Full round-trip |
+| All others | stripped | not produced | `_MACRO_RE` removes remaining `ac:*` tags |
+
+## Config format (`.py-conf-sync.config.yaml`)
+
+```yaml
+confluence_url: https://confluence.example.com
+jira_url: https://jira.example.com          # optional; used to linkify Jira macros on pull
+img_dir: img                                 # optional; local directory for attachment images (default: "img")
+pages:
+  - page_id: "123456"
+    file_path: docs/some-page.md
+    title: Some Page Title                   # optional, auto-populated on first pull
+```
+
+`page_id` is always treated as a string. `file_path` is relative to wherever the script
+is run from (intended to be the repo root).
+
+**`img_dir`**: On pull, if an attachment image's filename exists as `{img_dir}/{filename}`
+locally, the Markdown image reference uses the local relative path instead of the Confluence
+download URL. On push, local image references are uploaded as Confluence attachments before
+converting to storage format.
+
+## Credentials (`.csync.env`)
+
+```
+CONFLUENCE_TOKEN=<personal access token>
+# or (requires --unsafe-auth flag at runtime)
+CONFLUENCE_USERNAME=user@example.com
+CONFLUENCE_PASSWORD=<password>
+```
+
+Credentials are **never created by `init`** — users set them up manually by copying
+`.csync.env.example` to `~/.csync.env` and filling in their PAT.
+
+The credential file is located by searching in order: `~/.csync.env` (preferred), then
+the current working directory, then the script's own directory.
+
+Basic auth is disabled by default and requires `--unsafe-auth` to activate.
+
+## Known limitations / gotchas
+
+- **Push is full-replace**: `update_page()` replaces the entire page body. Do not use
+  on pages that are actively co-edited in Confluence.
+
+- **Expand round-trip degradation (stable)**: Code inside an `expand` block is stored by
+  Confluence as a `code` macro. On pull, markdownify renders `<pre><code>` as fenced
+  (`` ``` ``) rather than 4-space indented. This means the first pull after an expand
+  block with 4-space code will change it to fenced — but it is stable on subsequent
+  round-trips.
+
+- **Numbered lists split by macros**: A noformat or other block macro between list items
+  creates two separate `<ol>` elements in Confluence storage. Each `<ol>` starts at 1,
+  so items after the break will appear as 1, 2, 3 rather than continuing the sequence.
+  This is stable after the first round-trip.
+
+- **Images: local path vs. Confluence URL**: On pull, attachment images are rendered as
+  local `img/` paths if the file exists, otherwise as Confluence download URLs. On push,
+  local image paths are uploaded as attachments. Images not in `img/` and not already
+  uploaded must be added via the Confluence UI.
+
+- **Version conflict detection is optimistic**: Catches the case where remote is ahead
+  of local, but does not diff content. Two people editing the same local file clobber
+  each other on push — last writer wins.
+
+- **Script must be run from the repo root**: `file_path` values in config are relative
+  paths, and the script does not attempt to locate itself or the config file by traversing
+  upward.
+
+## Common extension points
+
+- **Status badges**: `ac:structured-macro ac:name="status"` → an inline marker like
+  `[STATUS:colour:label]`, restored on push. Would follow the same pattern as panel macros.
+
+- **A `diff` command**: Fetch remote, convert to Markdown, diff against local file without
+  writing. Would reuse `storage_to_markdown()` and could pipe to `difflib`.
+
+- **Watch mode**: Poll for remote changes and auto-pull. Would need a loop around
+  `get_page()` comparing versions.
+
+- **Multi-file init from a Confluence space**: Use the space content API
+  (`/rest/api/space/{KEY}/content`) to enumerate pages and bulk-register them.
+
+## Confluence API reference
+
+- Get page: `GET /rest/api/content/{id}?expand=body.storage,version,title`
+- Update page: `PUT /rest/api/content/{id}` with JSON body (see `update_page()`)
+- Upload attachment: `POST /rest/api/content/{id}/child/attachment`
+- Space content: `GET /rest/api/space/{KEY}/content`
+
+All endpoints are Confluence DC REST API v1 (`/rest/api/`). This tool does not use the
+v2 API (`/api/v2/`) introduced in newer DC versions.
