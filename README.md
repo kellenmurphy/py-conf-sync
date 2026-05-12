@@ -1,6 +1,7 @@
 # py-conf-sync
 
 [![Tests](https://github.com/kellenmurphy/py-conf-sync/actions/workflows/test.yml/badge.svg)](https://github.com/kellenmurphy/py-conf-sync/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/kellenmurphy/py-conf-sync/branch/main/graph/badge.svg)](https://codecov.io/gh/kellenmurphy/py-conf-sync)
 
 Technical writers and engineers often face a choice: write docs in Confluence's editor
 (where they live as rich pages, version-controlled by Confluence) or write them in
