@@ -203,26 +203,33 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Fenced code blocks (no language) | ` ``` ``` ` | `ac:structured-macro ac:name="code"` with `language=none`; also handles Confluence `noformat` macro on pull |
 | Tables | GFM pipe tables | `<table class="wrapped">` |
 | Ordered and unordered lists (nested) | `1.` / `-` with 2-space indent | `<ol>` / `<ul>` |
+| Attached images (with size, alignment, caption) | `![filename](confluence-url "ac:width=750 ac:align=center ac:title=...")` | `ac:image` + `ri:attachment` with all display attributes restored |
+| External images | `![alt](https://...)` | `ac:image` + `ri:url` |
+| Info / Note / Warning / Tip panels | `> [!NOTE]` / `> [!INFO]` / `> [!WARNING]` / `> [!TIP]` | `ac:structured-macro ac:name="note\|info\|warning\|tip"` |
 | Jira issue links | `[KEY-123](jira_url/browse/KEY-123)` | `ac:structured-macro ac:name="jira"` |
 | Confluence page links | `[Title](confluence://page/Title)` | `ac:link` + `ri:page` |
+| Relative links to tracked pages | `[Other Page](path/to/other.md)` | Resolved against config registry → `ac:link` internal link or page-ID URL |
 | Blockquotes | `>` | `<blockquote>` |
 | Horizontal rules | `---` | `<hr />` |
 
-### Not yet supported (planned)
+### Pull-only (converted on pull, not restored on push)
 
-These are stripped on pull and lost on push. Pages that rely on them will degrade
-the first time they are pushed through this tool.
+| Feature | What you get in Markdown |
+|---|---|
+| Confluence layout columns (`ac:layout`) | Layout wrapper stripped; content preserved inline |
+| `noformat` macro | Fenced code block with no language |
+
+### Not yet supported (planned)
 
 | Feature | Notes |
 |---|---|
-| Info / Note / Warning / Tip panels | Planned: map to blockquotes with a prefix marker |
 | Status badges | Planned: map to an inline marker e.g. `[STATUS:colour:label]` |
 
 ### Not supported (out of scope)
 
 | Feature | Notes |
 |---|---|
-| Attachments and images | Only page body content is handled |
+| Attachment upload | Images are linked by URL; attachments are not uploaded/downloaded |
 | User mentions (`@user`) | Stripped on pull |
 | Page includes | Stripped on pull |
 | Table of contents macro | Stripped on pull |
@@ -238,6 +245,9 @@ the first time they are pushed through this tool.
   changes will show only those changes.
 - **Version conflict detection is optimistic.** If two people edit the same local file
   and push, the last writer wins.
+- **Images in two-digit (10+) numbered list items.** Confluence uses trailing `\` hard
+  line breaks to separate list item text from continuation images. On push, these are
+  normalised so images render correctly in Confluence rather than appearing as code blocks.
 
 ## Credentials
 
