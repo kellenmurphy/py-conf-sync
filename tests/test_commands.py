@@ -15,6 +15,7 @@ from py_conf_sync import (
     _file_path,
     _get_client,
     _resolve_pages,
+    _render_mermaid_blocks,
     _upload_local_images,
     cmd_pull,
     cmd_push,
@@ -288,6 +289,31 @@ class TestCmdPull:
         config = load_config(config_path)
         assert config["pages"][0]["title"] == "Auto Title"
 
+    def test_pull_fetches_mermaid_source_from_txt_attachment(self, tmp_path, monkeypatch):
+        digest = "abc123def456"
+        source_url = f"https://conf.example.com/download/attachments/111/mermaid-{digest}.txt"
+        storage = f'<p><a href="{source_url}">Mermaid source</a></p>'
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test"}])
+        client = _mock_client(storage=storage)
+        mock_resp = MagicMock()
+        mock_resp.text = "flowchart LR\n    A --> B"
+        client.session.get.return_value = mock_resp
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_pull(_pull_args(config_path))
+        client.session.get.assert_called_once_with(source_url)
+        assert "Mermaid source" not in (tmp_path / "page.md").read_text()
+
+    def test_pull_mermaid_fetch_exception_ignored(self, tmp_path, monkeypatch):
+        digest = "abc123def456"
+        source_url = f"https://conf.example.com/download/attachments/111/mermaid-{digest}.txt"
+        storage = f'<p><a href="{source_url}">Mermaid source</a></p>'
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test"}])
+        client = _mock_client(storage=storage)
+        client.session.get.side_effect = Exception("network error")
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_pull(_pull_args(config_path))
+        assert (tmp_path / "page.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # _upload_local_images
@@ -427,6 +453,33 @@ class TestCmdPush:
         monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
         cmd_push(_push_args(config_path))
         assert "FAILED" in capsys.readouterr().out
+
+    def test_push_mermaid_render_failure_skips_page(self, tmp_path, monkeypatch, capsys):
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test Page"}])
+        _write_page(tmp_path, body="```mermaid\nflowchart LR\n    A --> B\n```")
+        client = _mock_client(version=5)
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+
+        def _fail_render(body, tmp_dir, dry_run=False):
+            raise RuntimeError("render failed")
+
+        monkeypatch.setattr(py_conf_sync, '_render_mermaid_blocks', _fail_render)
+        cmd_push(_push_args(config_path))
+        assert "FAILED" in capsys.readouterr().out
+        client.update_page.assert_not_called()
+
+    def test_push_removes_stale_mermaid_cache(self, tmp_path, monkeypatch):
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test Page"}])
+        content = (
+            "---\nconfluence_page_id: '111'\nconfluence_version: 5\n"
+            "title: Test Page\nmermaid_cache:\n  abc123: flowchart LR\n---\n\n"
+            "# Test Page\n\nHello.\n"
+        )
+        (tmp_path / "page.md").write_text(content)
+        client = _mock_client(version=5)
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_push(_push_args(config_path))
+        assert "mermaid_cache" not in (tmp_path / "page.md").read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -627,3 +680,77 @@ class TestMain:
         monkeypatch.setattr(sys, 'argv', ['py_conf_sync', '--version'])
         with pytest.raises(SystemExit):
             runpy.run_module('py_conf_sync', run_name='__main__', alter_sys=True)
+
+
+# ---------------------------------------------------------------------------
+# _render_mermaid_blocks
+# ---------------------------------------------------------------------------
+
+class TestMermaidRender:
+    FENCE = "```mermaid\nflowchart LR\n    A --> B\n```"
+
+    def _setup_js(self, tmp_path, monkeypatch):
+        js = tmp_path / "mermaid.min.js"
+        js.write_text("// fake mermaid js")
+        monkeypatch.setattr(py_conf_sync, '_MERMAID_JS_PATH', js)
+        return js
+
+    def _mock_playwright(self, title="ready", el=True):
+        mock_sp = MagicMock()
+        mock_pw = mock_sp.return_value.__enter__.return_value
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+        mock_pw.chromium.launch.return_value = mock_browser
+        mock_browser.new_context.return_value = mock_context
+        mock_context.new_page.return_value = mock_page
+        mock_page.title.return_value = title
+        mock_page.query_selector.return_value = MagicMock() if el else None
+        return mock_sp, mock_page
+
+    def test_dry_run_returns_original_and_prints(self, tmp_path, capsys):
+        result = _render_mermaid_blocks(self.FENCE, tmp_path, dry_run=True)
+        assert result == self.FENCE
+        assert "dry-run" in capsys.readouterr().out
+
+    def test_missing_js_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(py_conf_sync, '_MERMAID_JS_PATH', tmp_path / "nonexistent.js")
+        with pytest.raises(RuntimeError, match="mermaid.min.js not found"):
+            _render_mermaid_blocks(self.FENCE, tmp_path)
+
+    def test_missing_playwright_raises(self, tmp_path, monkeypatch):
+        self._setup_js(tmp_path, monkeypatch)
+        monkeypatch.setitem(sys.modules, 'playwright.sync_api', None)
+        with pytest.raises(RuntimeError, match="playwright not installed"):
+            _render_mermaid_blocks(self.FENCE, tmp_path)
+
+    def test_successful_render(self, tmp_path, monkeypatch):
+        self._setup_js(tmp_path, monkeypatch)
+        mock_sp, _ = self._mock_playwright(title="ready", el=True)
+        with patch('playwright.sync_api.sync_playwright', mock_sp):
+            result = _render_mermaid_blocks(self.FENCE, tmp_path)
+        assert "![Diagram 1]" in result
+        assert "Mermaid source" in result
+        assert "```mermaid" not in result
+
+    def test_error_title_raises(self, tmp_path, monkeypatch):
+        self._setup_js(tmp_path, monkeypatch)
+        mock_sp, _ = self._mock_playwright(title="error:bad syntax")
+        with patch('playwright.sync_api.sync_playwright', mock_sp):
+            with pytest.raises(RuntimeError, match="Mermaid render error"):
+                _render_mermaid_blocks(self.FENCE, tmp_path)
+
+    def test_no_element_raises(self, tmp_path, monkeypatch):
+        self._setup_js(tmp_path, monkeypatch)
+        mock_sp, _ = self._mock_playwright(title="ready", el=False)
+        with patch('playwright.sync_api.sync_playwright', mock_sp):
+            with pytest.raises(RuntimeError, match="no output element"):
+                _render_mermaid_blocks(self.FENCE, tmp_path)
+
+    def test_non_runtime_exception_wrapped(self, tmp_path, monkeypatch):
+        self._setup_js(tmp_path, monkeypatch)
+        mock_sp, mock_page = self._mock_playwright(title="ready", el=True)
+        mock_page.query_selector.return_value.screenshot.side_effect = IOError("disk full")
+        with patch('playwright.sync_api.sync_playwright', mock_sp):
+            with pytest.raises(RuntimeError, match="Playwright render failed"):
+                _render_mermaid_blocks(self.FENCE, tmp_path)

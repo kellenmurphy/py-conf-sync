@@ -13,6 +13,7 @@ from py_conf_sync import (
     _replace_noformat_macro,
     _replace_jira_macro,
     _replace_image_macro,
+    _restore_mermaid_blocks,
     _ensure_gitignore,
     load_config,
     save_config,
@@ -885,3 +886,32 @@ class TestLoadSaveConfig:
         path = tmp_path / "nonexistent.yaml"
         with pytest.raises(SystemExit):
             load_config(path)
+
+
+# ---------------------------------------------------------------------------
+# _restore_mermaid_blocks
+# ---------------------------------------------------------------------------
+
+class TestRestoreMermaidBlocks:
+    DIGEST = "abc123def456"
+
+    def test_no_source_keeps_png_ref(self):
+        png_ref = f"![Diagram 1](/tmp/mermaid-{self.DIGEST}.png)"
+        result = _restore_mermaid_blocks(png_ref, {})
+        assert result == png_ref
+
+    def test_source_restores_fence(self):
+        source = "flowchart LR\n    A --> B"
+        md = (
+            f"![Diagram 1](/tmp/mermaid-{self.DIGEST}.png)\n\n"
+            f"[Mermaid source](/tmp/mermaid-{self.DIGEST}.txt)"
+        )
+        result = _restore_mermaid_blocks(md, {self.DIGEST: source})
+        assert result == f"```mermaid\n{source}\n```"
+
+    def test_orphan_source_stripped(self):
+        url = f"https://conf.example.com/mermaid-{self.DIGEST}.txt"
+        md = f"Some text\n[Mermaid source]({url})"
+        result = _restore_mermaid_blocks(md, {})
+        assert "Mermaid source" not in result
+        assert "Some text" in result
