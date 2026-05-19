@@ -11,11 +11,13 @@ Usage:
 """
 
 import argparse
+import hashlib
 import html as html_lib
 import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -395,13 +397,23 @@ def markdown_to_storage(markdown_text: str, base_url: str | None = None, page_id
         sys.exit(1)
 
     extensions = ["tables", "fenced_code", "attr_list", "nl2br"]
-    # The Python markdown library does not support CommonMark trailing-backslash
-    # hard line breaks — strip them so they don't appear as literal \ in Confluence.
-    # Lines where \ is the only non-whitespace content (e.g. "    \") must become
-    # truly empty lines, not spaces-only lines; otherwise the markdown library
-    # mistakes the next indented line for a code block inside a list.
-    markdown_text = re.sub(r'^[ \t]+\\[ \t]*\n', '\n', markdown_text, flags=re.MULTILINE)
-    markdown_text = re.sub(r'\\[ \t]*\n', '\n', markdown_text)
+    # Strip CommonMark trailing-backslash hard line breaks from prose only.
+    # Applying the regexes to the whole document also strips backslash line
+    # continuations inside fenced code blocks (e.g. Dockerfile RUN commands).
+    # Split on fence boundaries so only prose segments are affected.
+    _fence_parts = re.split(
+        r'(^(?:```|~~~)[^\n]*\n.*?^(?:```|~~~)[ \t]*$)',
+        markdown_text, flags=re.MULTILINE | re.DOTALL,
+    )
+    for _i in range(0, len(_fence_parts), 2):  # even indices are prose
+        _p = _fence_parts[_i]
+        # Lines where \ is the only non-whitespace content (e.g. "    \") must
+        # become truly empty lines so the markdown library doesn't mistake the
+        # next indented line for a code block continuation inside a list.
+        _p = re.sub(r'^[ \t]+\\[ \t]*\n', '\n', _p, flags=re.MULTILINE)
+        _p = re.sub(r'\\[ \t]*\n', '\n', _p)
+        _fence_parts[_i] = _p
+    markdown_text = ''.join(_fence_parts)
     # For two-digit (and higher) numbered list items, the required continuation
     # indentation (4+ spaces) equals the 4-space code block threshold. A blank
     # line before a 4+-space-indented image breaks the list out of <ol> context
@@ -693,6 +705,16 @@ def cmd_pull(args):
             page_id=page_id,
             img_dir=config.get("img_dir", "img"),
         )
+        source_map: dict = {}
+        for src_m in _MERMAID_SOURCE_URL_RE.finditer(markdown_text):
+            url, digest = src_m.group(1), src_m.group(2)
+            try:
+                resp = client.session.get(url)
+                resp.raise_for_status()
+                source_map[digest] = resp.text.strip()
+            except Exception:
+                pass
+        markdown_text = _restore_mermaid_blocks(markdown_text, source_map)
 
         fm_data = {
             "confluence_page_id": str(page_id),
@@ -716,7 +738,143 @@ def cmd_pull(args):
         save_config(config, args._config_path)
 
 
+_MERMAID_FENCE_RE = re.compile(r'```mermaid\n(.*?)\n```', re.DOTALL)
+_MERMAID_JS_PATH = Path(__file__).parent / "mermaid.min.js"
+
+
+def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> str:
+    """Replace ```mermaid fenced blocks with PNG image references rendered via Playwright."""
+    if not _MERMAID_FENCE_RE.search(body):
+        return body
+
+    if dry_run:
+        def _replace_dry(m):
+            digest = hashlib.sha256(m.group(1).encode()).hexdigest()[:12]
+            print(f"\n  [dry-run] would render mermaid block → mermaid-{digest}.png / .txt")
+            return m.group(0)
+        return _MERMAID_FENCE_RE.sub(_replace_dry, body)
+
+    if not _MERMAID_JS_PATH.exists():
+        raise RuntimeError(f"mermaid.min.js not found at {_MERMAID_JS_PATH} — rebuild the image")
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise RuntimeError("playwright not installed — rebuild the image")
+
+    mermaid_js = _MERMAID_JS_PATH.read_text(encoding="utf-8")
+    counter = [0]
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ])
+        # device_scale_factor=2 gives retina-quality PNGs; the large viewport
+        # ensures mermaid has room to lay out wide flowcharts before we fix the
+        # SVG dimensions explicitly.
+        context = browser.new_context(
+            viewport={"width": 3200, "height": 2400},
+            device_scale_factor=2.0,
+        )
+
+        def _replace(m):
+            source = m.group(1)
+            digest = hashlib.sha256(source.encode()).hexdigest()[:12]
+            output_file = tmp_dir / f"mermaid-{digest}.png"
+            (tmp_dir / f"mermaid-{digest}.txt").write_text(source, encoding="utf-8")
+            escaped = html_lib.escape(source, quote=False)
+            page_html = (
+                "<!DOCTYPE html><html>"
+                "<head><style>"
+                "body{margin:0;background:white}"
+                "#diagram{display:inline-block;padding:16px;background:white}"
+                "</style></head><body>"
+                f'<div id="diagram" class="mermaid">{escaped}</div>'
+                f"<script>{mermaid_js}</script>"
+                "<script>"
+                "mermaid.initialize({startOnLoad:false,theme:'default'});"
+                "mermaid.run({nodes:[document.getElementById('diagram')]}).then(function(){"
+                # After render, fix SVG to explicit px dimensions from its viewBox
+                # so it renders at natural size instead of 100%-of-container.
+                "var svg=document.querySelector('#diagram svg');"
+                "if(svg){var vb=svg.viewBox.baseVal;"
+                "if(vb&&vb.width>0){svg.setAttribute('width',vb.width+'px');svg.setAttribute('height',vb.height+'px');}}"
+                "document.title='ready';"
+                "}).catch(function(e){"
+                "document.title='error:'+e.message;"
+                "});"
+                "</script></body></html>"
+            )
+            try:
+                pg = context.new_page()
+                try:
+                    pg.set_content(page_html, wait_until="domcontentloaded")
+                    pg.wait_for_function(
+                        "document.title === 'ready' || document.title.startsWith('error:')",
+                        timeout=30_000,
+                    )
+                    title = pg.title()
+                    if title.startswith("error:"):
+                        raise RuntimeError(f"Mermaid render error: {title[6:]}")
+                    el = pg.query_selector("#diagram")
+                    if not el:
+                        raise RuntimeError("Mermaid produced no output element")
+                    el.screenshot(path=str(output_file))
+                finally:
+                    pg.close()
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(f"Playwright render failed: {e}") from e
+
+            counter[0] += 1
+            txt_file = tmp_dir / f"mermaid-{digest}.txt"
+            return f"![Diagram {counter[0]}]({output_file})\n\n[Mermaid source]({txt_file})"
+
+        try:
+            result = _MERMAID_FENCE_RE.sub(_replace, body)
+        finally:
+            context.close()
+            browser.close()
+
+    return result
+
+
+_MERMAID_SOURCE_URL_RE = re.compile(
+    r'\[Mermaid source\]\(([^)]*[/:]mermaid-([0-9a-f]{12})\.txt[^)]*)\)'
+)
+# Group 1: full PNG image ref. Group 2: 12-char digest.
+# The \2 backreference in the optional part ensures the source link digest matches.
+# \\? consumes a trailing backslash hard-break that markdownify emits when
+# a duplicate source link follows on the next line.
+_MERMAID_PAIR_RE = re.compile(
+    r'(!\[[^\]]*\]\([^)]*[/:]mermaid-([0-9a-f]{12})\.png[^)]*\))'
+    r'(?:\n+\[Mermaid source\]\([^)]*mermaid-\2\.txt[^)]*\)\\?)?'
+)
+# Strips any remaining [Mermaid source] links not consumed by _MERMAID_PAIR_RE
+# (e.g. duplicate entries from accumulation across multiple push/pull cycles).
+_MERMAID_ORPHAN_SOURCE_RE = re.compile(
+    r'\n*\[Mermaid source\]\([^)]+mermaid-[0-9a-f]{12}\.txt[^)]*\)'
+)
+
+
+def _restore_mermaid_blocks(markdown: str, source_map: dict) -> str:
+    """Replace mermaid PNG+source-link pairs with the original mermaid fence.
+    Strips all remaining [Mermaid source] links so they never appear in the git file."""
+    def _replace(m):
+        source = source_map.get(m.group(2))
+        if source is None:
+            return m.group(1)  # no source available — drop the source link, keep PNG ref
+        return f"```mermaid\n{source}\n```"
+    markdown = _MERMAID_PAIR_RE.sub(_replace, markdown)
+    return _MERMAID_ORPHAN_SOURCE_RE.sub('', markdown)
+
+
 _LOCAL_IMG_RE = re.compile(r'(!\[[^\]]*\]\()([^\s")]+)((?:\s+"[^"]*")?\))')
+_LOCAL_MERMAID_SOURCE_RE = re.compile(r'(\[Mermaid source\]\()([^\s")]+)((?:\s+"[^"]*")?\))')
 
 
 def _upload_local_images(body: str, client, page_id: str, base_url: str, current_file: Path, dry_run: bool = False) -> str:
@@ -740,7 +898,8 @@ def _upload_local_images(body: str, client, page_id: str, base_url: str, current
         except Exception as e:
             print(f"FAILED ({e})")
             return m.group(0)
-    return _LOCAL_IMG_RE.sub(_replace, body)
+    body = _LOCAL_IMG_RE.sub(_replace, body)
+    return _LOCAL_MERMAID_SOURCE_RE.sub(_replace, body)
 
 
 def cmd_push(args):
@@ -786,15 +945,26 @@ def cmd_push(args):
 
         body_for_conversion = re.sub(r"^#\s+.+\n", "", body, count=1).strip()
         body_for_conversion = _resolve_relative_md_links(body_for_conversion, file_path, config)
-        body_for_conversion = _upload_local_images(
-            body_for_conversion, client, page_id,
-            config.get("confluence_url", ""), file_path, dry_run=args.dry_run,
-        )
-        storage_body = markdown_to_storage(
-            body_for_conversion,
-            base_url=config.get("confluence_url"),
-            page_id=page_id,
-        )
+        # Strip any orphaned [Mermaid source] links left by a previous incomplete pull
+        # before rendering, so they don't accumulate across push/pull cycles.
+        body_for_conversion = _MERMAID_ORPHAN_SOURCE_RE.sub('', body_for_conversion)
+        with tempfile.TemporaryDirectory() as _mermaid_tmp:
+            try:
+                body_for_conversion = _render_mermaid_blocks(
+                    body_for_conversion, Path(_mermaid_tmp), dry_run=args.dry_run,
+                )
+            except RuntimeError as e:
+                print(f"FAILED (mermaid: {e})")
+                continue
+            body_for_conversion = _upload_local_images(
+                body_for_conversion, client, page_id,
+                config.get("confluence_url", ""), file_path, dry_run=args.dry_run,
+            )
+            storage_body = markdown_to_storage(
+                body_for_conversion,
+                base_url=config.get("confluence_url"),
+                page_id=page_id,
+            )
         new_version = remote_version + 1
 
         if args.dry_run:
@@ -808,6 +978,8 @@ def cmd_push(args):
                 continue
 
             fm["confluence_version"] = new_version
+            if "mermaid_cache" in fm:
+                del fm["mermaid_cache"]
             updated = _write_front_matter(fm, body)
             file_path.write_text(updated, encoding="utf-8")
             print(f"ok (now v{new_version})")
