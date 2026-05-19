@@ -206,6 +206,7 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Collapsible expand sections | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` |
 | Tables | GFM pipe tables | `<table class="wrapped">` |
 | Ordered and unordered lists (nested) | `1.` / `-` with 2-space indent | `<ol>` / `<ul>` |
+| Mermaid diagrams | ` ```mermaid ``` ` | PNG attachment + `.txt` source attachment; fence restored on pull |
 | Attached images (with size, alignment, caption) | `![filename](img/filename "ac:width=750 ac:align=center ac:title=...")` | `ac:image` + `ri:attachment` with all display attributes restored |
 | External images | `![alt](https://...)` | `ac:image` + `ri:url` |
 | Info / Note / Warning / Tip panels | `> [!NOTE]` / `> [!INFO]` / `> [!WARNING]` / `> [!TIP]` | `ac:structured-macro ac:name="note\|info\|warning\|tip"` |
@@ -214,6 +215,43 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Relative links to tracked pages | `[Other Page](path/to/other.md)` | Resolved against config registry → `ac:link` internal link or page-ID URL |
 | Blockquotes | `>` | `<blockquote>` |
 | Horizontal rules | `---` | `<hr />` |
+
+### Mermaid diagrams
+
+Fenced ` ```mermaid ` blocks are automatically rendered to PNG images and uploaded as
+Confluence attachments on push. Confluence Data Center does not natively render Mermaid,
+so this gives you diagrams in git-tracked Markdown that display correctly on the published
+page — without any Confluence app or plugin.
+
+**On push:** each ` ```mermaid ` block is rendered to a retina-quality PNG by headless
+Chromium (bundled in the Docker image via Playwright and a bundled `mermaid.min.js` — no
+network calls at render time). The PNG is uploaded as a page attachment and replaces the
+mermaid block in the Confluence page body. A **Mermaid source** link to a companion `.txt`
+attachment is placed below each diagram so the original source is accessible to Confluence
+readers and editors.
+
+**On pull:** the `.txt` attachment is fetched from Confluence and the original
+` ```mermaid ` fence is restored in the local Markdown file. No source is lost across the
+round-trip.
+
+If a mermaid block fails to render (syntax error, Playwright unavailable), the push aborts
+for that page.
+
+```markdown
+## Architecture
+
+    ```mermaid
+    flowchart LR
+        A[Web App] --> B[Auth Service]
+        B --> C[(Database)]
+    ```
+```
+
+After push, Confluence shows the rendered diagram with a Mermaid source link below it.
+After pull, the ` ```mermaid ` block is restored in the local Markdown file.
+
+> **Running outside Docker:** `playwright` must be installed and `mermaid.min.js` must be
+> present alongside `py_conf_sync.py`. The Docker image handles both automatically.
 
 ### Local image attachments
 
