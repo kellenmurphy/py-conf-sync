@@ -442,6 +442,64 @@ class TestTOC:
         result = markdown_to_storage(md)
         assert 'ac:name="toc"' in result
 
+    def test_pull_toc_with_max_level(self):
+        storage = (
+            '<ac:structured-macro ac:name="toc" ac:schema-version="1" ac:macro-id="abc">'
+            '<ac:parameter ac:name="maxLevel">2</ac:parameter>'
+            '</ac:structured-macro>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[TOC maxLevel=2]" in result
+
+    def test_push_toc_with_max_level(self):
+        result = markdown_to_storage("[TOC maxLevel=3]")
+        assert 'ac:name="toc"' in result
+        assert '<ac:parameter ac:name="maxLevel">3</ac:parameter>' in result
+
+    def test_toc_max_level_round_trip(self):
+        storage = (
+            '<ac:structured-macro ac:name="toc" ac:schema-version="1">'
+            '<ac:parameter ac:name="maxLevel">2</ac:parameter>'
+            '</ac:structured-macro>'
+        )
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="toc"' in result
+        assert '<ac:parameter ac:name="maxLevel">2</ac:parameter>' in result
+
+    def test_push_toc_without_max_level_has_no_param(self):
+        result = markdown_to_storage("[TOC]")
+        assert 'ac:name="toc"' in result
+        assert 'maxLevel' not in result
+
+
+class TestChildren:
+    def test_pull_children_self_closing(self):
+        storage = '<ac:structured-macro ac:name="children" ac:schema-version="2" ac:macro-id="abc123" />'
+        result = storage_to_markdown(storage)
+        assert "[CHILDREN]" in result
+
+    def test_push_children_placeholder(self):
+        result = markdown_to_storage("[CHILDREN]")
+        assert 'ac:name="children"' in result
+
+    def test_children_round_trip(self):
+        storage = '<ac:structured-macro ac:name="children" ac:schema-version="2" ac:macro-id="abc" />'
+        md = storage_to_markdown(storage)
+        result = markdown_to_storage(md)
+        assert 'ac:name="children"' in result
+
+    def test_pull_children_does_not_eat_following_content(self):
+        storage = (
+            '<ac:structured-macro ac:name="children" ac:schema-version="2" ac:macro-id="abc" />'
+            '<h2>Section Heading</h2>'
+            '<p>Paragraph text.</p>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[CHILDREN]" in result
+        assert "Section Heading" in result
+        assert "Paragraph text" in result
+
 
 class TestNoformat:
     def test_pull_noformat_macro(self):
