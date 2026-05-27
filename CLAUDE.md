@@ -1,3 +1,4 @@
+
 # CLAUDE.md
 
 This file provides context for Claude Code when working in this project.
@@ -74,7 +75,8 @@ open/close pairs and cannot consume content across tag boundaries.
 |---|---|---|---|
 | `code` | ` ```lang ``` ` fenced block | `ac:structured-macro ac:name="code"` | Full round-trip |
 | `noformat` | ` ```noformat ``` ` fenced block | `ac:structured-macro ac:name="noformat"` | Full round-trip |
-| `toc` | `[TOC]` placeholder | `ac:structured-macro ac:name="toc"` | Full round-trip |
+| `toc` | `[TOC]` or `[TOC maxLevel=N]` placeholder | `ac:structured-macro ac:name="toc"` | Full round-trip; `maxLevel` param preserved |
+| `children` | `[CHILDREN]` placeholder | `ac:structured-macro ac:name="children"` | Full round-trip |
 | `expand` | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` | Full round-trip; code inside expand becomes fenced on pull |
 | `note`/`info`/`warning`/`tip` | `> [!NOTE]` etc. GFM alerts | `ac:structured-macro ac:name="note\|info\|..."` | Full round-trip |
 | `jira` | `[KEY-123](jira_url/browse/KEY-123)` | `ac:structured-macro ac:name="jira"` | Full round-trip |

@@ -203,6 +203,10 @@ _TOC_MACRO_RE = re.compile(
     r'<ac:structured-macro[^>]*\bac:name="toc"(?:[^/>]|/(?!>))*(?:/>|>.*?</ac:structured-macro>)',
     re.DOTALL,
 )
+_CHILDREN_MACRO_RE = re.compile(
+    r'<ac:structured-macro[^>]*\bac:name="children"(?:[^/>]|/(?!>))*(?:/>|>.*?</ac:structured-macro>)',
+    re.DOTALL,
+)
 _PANEL_MACRO_RE = re.compile(
     r'<ac:structured-macro[^>]*\bac:name="(note|info|warning|tip)"[^>]*>'
     r'.*?<ac:rich-text-body[^>]*>(.*?)</ac:rich-text-body>'
@@ -360,7 +364,12 @@ def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url
     # TODO: add round-trip support for status badges
     #       (ac:structured-macro ac:name="status") →
     #       inline marker e.g. `[STATUS:colour:label]`, restored on push.
-    cleaned = _TOC_MACRO_RE.sub('<p>[TOC]</p>', storage_html)
+    def _replace_toc_macro(m):
+        ml = re.search(r'<ac:parameter\s+ac:name="maxLevel">(\d+)</ac:parameter>', m.group(0))
+        return f'<p>[TOC maxLevel={ml.group(1)}]</p>' if ml else '<p>[TOC]</p>'
+
+    cleaned = _TOC_MACRO_RE.sub(_replace_toc_macro, storage_html)
+    cleaned = _CHILDREN_MACRO_RE.sub('<p>[CHILDREN]</p>', cleaned)
     cleaned = _CODE_MACRO_RE.sub(lambda m: _replace_code_macro(m.group(0)), cleaned)
     cleaned = _NOFORMAT_MACRO_RE.sub(lambda m: _replace_noformat_macro(m.group(0)), cleaned)
     cleaned = _JIRA_MACRO_RE.sub(lambda m: _replace_jira_macro(m.group(0), jira_url), cleaned)
@@ -432,9 +441,19 @@ def markdown_to_storage(markdown_text: str, base_url: str | None = None, page_id
 
     html = re.sub(r"<br>", "<br />", html)
     html = re.sub(r"<hr>", "<hr />", html)
+    def _toc_to_storage(m):
+        if m.group(1):
+            return (
+                '<ac:structured-macro ac:name="toc" ac:schema-version="1">'
+                f'<ac:parameter ac:name="maxLevel">{m.group(1)}</ac:parameter>'
+                '</ac:structured-macro>'
+            )
+        return '<ac:structured-macro ac:name="toc" ac:schema-version="1"></ac:structured-macro>'
+
+    html = re.sub(r'<p>\[TOC(?:\s+maxLevel=(\d+))?\]</p>', _toc_to_storage, html)
     html = re.sub(
-        r'<p>\[TOC\]</p>',
-        '<ac:structured-macro ac:name="toc" ac:schema-version="1"></ac:structured-macro>',
+        r'<p>\[CHILDREN\]</p>',
+        '<ac:structured-macro ac:name="children" ac:schema-version="1"></ac:structured-macro>',
         html,
     )
 
