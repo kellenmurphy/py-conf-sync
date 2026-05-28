@@ -809,7 +809,7 @@ def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> s
                 "<!DOCTYPE html><html>"
                 "<head><style>"
                 "body{margin:0;background:white}"
-                "#diagram{display:inline-block;padding:16px;background:white}"
+                "#diagram{display:block;padding:16px;background:white;width:1400px}"
                 "</style></head><body>"
                 f'<div id="diagram" class="mermaid">{escaped}</div>'
                 f"<script>{mermaid_js}</script>"
@@ -851,7 +851,7 @@ def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> s
 
             counter[0] += 1
             txt_file = tmp_dir / f"mermaid-{digest}.txt"
-            return f"![Diagram {counter[0]}]({output_file})\n\n[Mermaid source]({txt_file})"
+            return f'![Diagram {counter[0]}]({output_file} "ac:width=900")\n\n[Mermaid source]({txt_file})'
 
         try:
             result = _MERMAID_FENCE_RE.sub(_replace, body)

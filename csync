@@ -10,7 +10,7 @@ PUBLISHED_IMAGE="ghcr.io/kellenmurphy/py-conf-sync:latest"
 
 if [[ "${1:-}" == "--rebuild" ]]; then
     shift
-    docker build -t "$LOCAL_IMAGE" "$SCRIPT_DIR" >&2
+    docker build --no-cache --network=host -t "$LOCAL_IMAGE" "$SCRIPT_DIR" >&2
     IMAGE="$LOCAL_IMAGE"
 elif docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1; then
     IMAGE="$LOCAL_IMAGE"
@@ -18,7 +18,7 @@ elif docker pull "$PUBLISHED_IMAGE" >/dev/null 2>&1; then
     IMAGE="$PUBLISHED_IMAGE"
 else
     echo "[py-conf-sync] No image found — building locally..." >&2
-    docker build -q -t "$LOCAL_IMAGE" "$SCRIPT_DIR" >&2
+    docker build --network=host -q -t "$LOCAL_IMAGE" "$SCRIPT_DIR" >&2
     IMAGE="$LOCAL_IMAGE"
 fi
 
