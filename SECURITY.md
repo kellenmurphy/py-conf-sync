@@ -40,7 +40,7 @@ receive a response within **5 business days** acknowledging the report.
 
 ## Supply chain
 
-- Dependencies are monitored by Dependabot and updated weekly
+- Dependencies are pinned via pip-compile lockfiles (`requirements.txt`, `requirements-dev.txt`) and updated weekly by Dependabot
 - All merges to `main` require a passing test suite
 - Docker images are published via GitHub Actions with pinned action versions
 - Images are tagged by semver and `latest` tracks the current release

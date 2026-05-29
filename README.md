@@ -73,7 +73,7 @@ It builds the image on first use and mounts your current directory into the cont
 Absolute paths in arguments are automatically mounted into the container, so
 cross-repo operations work without any extra flags.
 
-**After updating `py_conf_sync.py` or `requirements.txt`**, rebuild the image:
+**After updating `py_conf_sync.py` or `requirements.in`**, rebuild the image:
 
 ```bash
 ./csync --rebuild pull
