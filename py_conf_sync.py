@@ -26,7 +26,7 @@ import yaml
 from markdownify import markdownify as md
 from dotenv import load_dotenv
 
-__version__ = "1.0.0"
+__version__ = "1.3.0"
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -820,7 +820,8 @@ def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> s
                 # so it renders at natural size instead of 100%-of-container.
                 "var svg=document.querySelector('#diagram svg');"
                 "if(svg){var vb=svg.viewBox.baseVal;"
-                "if(vb&&vb.width>0){svg.setAttribute('width',vb.width+'px');svg.setAttribute('height',vb.height+'px');}}"
+                "if(vb&&vb.width>0){svg.setAttribute('width',vb.width+'px');svg.setAttribute('height',vb.height+'px');"
+                "document.getElementById('diagram').style.width=Math.max(vb.width+32,1400)+'px';}}"
                 "document.title='ready';"
                 "}).catch(function(e){"
                 "document.title='error:'+e.message;"
