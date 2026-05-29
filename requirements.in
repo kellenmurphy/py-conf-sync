@@ -1,0 +1,6 @@
+requests>=2.34.2
+markdownify>=1.2.2
+markdown>=3.10.2
+python-dotenv>=1.2.2
+PyYAML>=6.0.3
+playwright>=1.60.0

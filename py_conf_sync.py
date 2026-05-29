@@ -26,7 +26,7 @@ import yaml
 from markdownify import markdownify as md
 from dotenv import load_dotenv
 
-__version__ = "1.0.0"
+__version__ = "1.3.0"
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -809,7 +809,7 @@ def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> s
                 "<!DOCTYPE html><html>"
                 "<head><style>"
                 "body{margin:0;background:white}"
-                "#diagram{display:inline-block;padding:16px;background:white}"
+                "#diagram{display:block;padding:16px;background:white;width:1400px}"
                 "</style></head><body>"
                 f'<div id="diagram" class="mermaid">{escaped}</div>'
                 f"<script>{mermaid_js}</script>"
@@ -820,7 +820,8 @@ def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> s
                 # so it renders at natural size instead of 100%-of-container.
                 "var svg=document.querySelector('#diagram svg');"
                 "if(svg){var vb=svg.viewBox.baseVal;"
-                "if(vb&&vb.width>0){svg.setAttribute('width',vb.width+'px');svg.setAttribute('height',vb.height+'px');}}"
+                "if(vb&&vb.width>0){svg.setAttribute('width',vb.width+'px');svg.setAttribute('height',vb.height+'px');"
+                "document.getElementById('diagram').style.width=Math.max(vb.width+32,1400)+'px';}}"
                 "document.title='ready';"
                 "}).catch(function(e){"
                 "document.title='error:'+e.message;"
@@ -851,7 +852,7 @@ def _render_mermaid_blocks(body: str, tmp_dir: Path, dry_run: bool = False) -> s
 
             counter[0] += 1
             txt_file = tmp_dir / f"mermaid-{digest}.txt"
-            return f"![Diagram {counter[0]}]({output_file})\n\n[Mermaid source]({txt_file})"
+            return f'![Diagram {counter[0]}]({output_file} "ac:width=900")\n\n[Mermaid source]({txt_file})'
 
         try:
             result = _MERMAID_FENCE_RE.sub(_replace, body)
