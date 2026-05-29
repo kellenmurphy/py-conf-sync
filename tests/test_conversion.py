@@ -683,8 +683,7 @@ class TestRelativeLinkResolution:
         current = tmp_path / "docs" / "containerization.md"
         body = "[Auth Repo](ci/auth.md)"
         result = _resolve_relative_md_links(body, current, config)
-        assert "111222" in result
-        assert "confluence.example.com" in result
+        assert result == "[Auth Repo](https://confluence.example.com/pages/111222)"
 
     def test_relative_link_to_untracked_file_unchanged(self, tmp_path):
         config = self._config(tmp_path, [])
@@ -836,7 +835,7 @@ class TestCmdInit:
         cmd_init(args)
         captured = capsys.readouterr()
         assert "skip" in captured.out
-        assert "old.example.com" in config_path.read_text()
+        assert config_path.read_text() == "confluence_url: https://old.example.com\n"
 
     def test_overwrites_with_force(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
