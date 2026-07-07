@@ -16,9 +16,9 @@ idna==3.17
     # via requests
 markdown==3.10.2
     # via -r requirements.in
-markdownify==1.2.2
+markdownify==1.2.3
     # via -r requirements.in
-playwright==1.60.0
+playwright==1.61.0
     # via -r requirements.in
 pyee==13.0.1
     # via playwright
