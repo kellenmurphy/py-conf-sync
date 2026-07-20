@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-py-conf-sync: Keep Confluence Data Center pages in sync with Markdown files in a git repo.
+py-conf-sync: Keep Confluence (Data Center or Cloud) pages in sync with Markdown files in a git repo.
 
 Usage:
     python py_conf_sync.py [--config PATH] pull [--page PAGE_ID] [--dry-run]
@@ -19,14 +19,14 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 import yaml
 from markdownify import markdownify as md
 from dotenv import load_dotenv
 
-__version__ = "1.3.1"
+__version__ = "2.0.0"
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -127,6 +127,13 @@ class ConfluenceClient:
         resp.raise_for_status()
         return f"{self.base_url}/download/attachments/{page_id}/{quote(filename, safe='')}"
 
+    def download_attachment_text(self, page_id: str, filename: str) -> str:
+        """Fetch an attachment's content as text."""
+        url = f"{self.base_url}/download/attachments/{page_id}/{quote(filename, safe='')}"
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        return resp.text
+
     def update_page(self, page_id: str, title: str, storage_body: str, version: int) -> dict:
         url = f"{self.base_url}/rest/api/content/{page_id}"
         payload = {
@@ -143,6 +150,45 @@ class ConfluenceClient:
         resp = self.session.put(url, data=json.dumps(payload))
         resp.raise_for_status()
         return resp.json()
+
+
+class CloudConfluenceClient(ConfluenceClient):
+    """Atlassian Cloud: v2 API for page get/update; inherited v1 endpoint for
+    attachments (v2 has no upload endpoint). base_url must include /wiki."""
+
+    def get_page(self, page_id: str) -> dict:
+        resp = self.session.get(
+            f"{self.base_url}/api/v2/pages/{page_id}",
+            params={"body-format": "storage"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_page(self, page_id: str, title: str, storage_body: str, version: int) -> dict:
+        payload = {
+            "id": str(page_id),
+            "status": "current",
+            "title": title,
+            "body": {"representation": "storage", "value": storage_body},
+            "version": {"number": version},
+        }
+        resp = self.session.put(f"{self.base_url}/api/v2/pages/{page_id}", data=json.dumps(payload))
+        resp.raise_for_status()
+        return resp.json()
+
+    def download_attachment_text(self, page_id: str, filename: str) -> str:
+        # Cloud's /download/attachments/ path only accepts browser-session
+        # cookies (401 for API tokens); token auth must use the REST download
+        # endpoint, which redirects to a signed media URL.
+        attach_url = f"{self.base_url}/rest/api/content/{page_id}/child/attachment"
+        check = self.session.get(attach_url, params={"filename": filename})
+        check.raise_for_status()
+        results = check.json().get("results", [])
+        if not results:
+            raise requests.HTTPError(f"attachment not found: {filename}")
+        resp = self.session.get(f"{attach_url}/{results[0]['id']}/download")
+        resp.raise_for_status()
+        return resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -634,14 +680,28 @@ def cmd_remove(args):
     print(f"[ok] Removed page {args.page_id}")
 
 
+def _is_cloud(config: dict) -> bool:
+    """Cloud vs Data Center: explicit instance_type wins, else detect by hostname."""
+    explicit = (config.get("instance_type") or "").lower()
+    if explicit == "cloud":
+        return True
+    if explicit in ("datacenter", "dc", "server"):
+        return False
+    host = urlparse(config.get("confluence_url") or "").hostname or ""
+    return host.endswith(".atlassian.net")
+
+
 def _get_client(config: dict, args) -> ConfluenceClient:
     env_file = _find_env_file()
-    if not env_file:
-        print("[error] No .csync.env found.")
+    if env_file:
+        load_dotenv(env_file)
+    elif not os.getenv("CONFLUENCE_TOKEN") and not (
+        os.getenv("CONFLUENCE_USERNAME") and os.getenv("CONFLUENCE_PASSWORD")
+    ):
+        print("[error] No .csync.env found and no credentials in the environment.")
         print("        Checked: ~/.csync.env, current directory, script directory.")
-        print("        Run 'init' to create one. Preferred location: ~/.csync.env")
+        print("        Run 'init' to create one, or export CONFLUENCE_TOKEN directly.")
         sys.exit(1)
-    load_dotenv(env_file)
     base_url = config.get("confluence_url")
     if not base_url:
         print("[error] confluence_url not set in config.")
@@ -653,6 +713,22 @@ def _get_client(config: dict, args) -> ConfluenceClient:
     token = os.getenv("CONFLUENCE_TOKEN")
     username = os.getenv("CONFLUENCE_USERNAME")
     password = os.getenv("CONFLUENCE_PASSWORD")
+
+    if _is_cloud(config):
+        # Cloud wiki content lives under /wiki; conversion code builds and
+        # matches attachment download URLs from config["confluence_url"], so
+        # the normalized URL must be written back, not just used for the client.
+        if "/wiki" not in urlparse(base_url).path:
+            base_url = base_url.rstrip("/") + "/wiki"
+            config["confluence_url"] = base_url
+            print(f"[info] Cloud instance detected — using {base_url}")
+        email = os.getenv("CONFLUENCE_EMAIL")
+        if not token or not email:
+            print("[error] Confluence Cloud requires CONFLUENCE_TOKEN (API token from")
+            print("        https://id.atlassian.com/manage-profile/security/api-tokens)")
+            print("        and CONFLUENCE_EMAIL in .csync.env")
+            sys.exit(1)
+        return CloudConfluenceClient(base_url=base_url, username=email, password=token)
 
     if not token and (username or password):
         if not getattr(args, "unsafe_auth", False):
@@ -726,11 +802,11 @@ def cmd_pull(args):
         )
         source_map: dict = {}
         for src_m in _MERMAID_SOURCE_URL_RE.finditer(markdown_text):
-            url, digest = src_m.group(1), src_m.group(2)
+            digest = src_m.group(2)
             try:
-                resp = client.session.get(url)
-                resp.raise_for_status()
-                source_map[digest] = resp.text.strip()
+                source_map[digest] = client.download_attachment_text(
+                    page_id, f"mermaid-{digest}.txt"
+                ).strip()
             except Exception:
                 pass
         markdown_text = _restore_mermaid_blocks(markdown_text, source_map)
@@ -1170,7 +1246,7 @@ def _write_front_matter(fm: dict, body: str) -> str:
 def main():
     parser = argparse.ArgumentParser(
         prog="py_conf_sync",
-        description="Sync Confluence Data Center pages with Markdown files in a git repo.",
+        description="Sync Confluence (Data Center or Cloud) pages with Markdown files in a git repo.",
     )
     parser.add_argument(
         "--config",

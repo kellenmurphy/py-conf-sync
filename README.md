@@ -85,6 +85,15 @@ Or rebuild explicitly without running a command:
 ./csync --rebuild status
 ```
 
+> **Image build fails downloading Chromium?** If `playwright install chromium` dies with
+> `Client network socket disconnected before secure TLS connection was established` on
+> every mirror, your network is advertising IPv6 that doesn't actually route (common on
+> home networks; frequently reported from Docker Desktop on Apple Silicon Macs, but it is
+> a network issue, not an architecture one — playwright's Node-based downloader tries IPv6
+> first and never falls back to IPv4). Fix: in Docker Desktop go to
+> **Settings → Resources → Network** and set **Default networking mode** to **IPv4 only**,
+> then Apply & restart and rebuild.
+
 ## Commands
 
 ```
@@ -219,9 +228,9 @@ Confluence will render correctly, and pulling that page back produces the same M
 ### Mermaid diagrams
 
 Fenced ` ```mermaid ` blocks are automatically rendered to PNG images and uploaded as
-Confluence attachments on push. Confluence Data Center does not natively render Mermaid,
-so this gives you diagrams in git-tracked Markdown that display correctly on the published
-page — without any Confluence app or plugin.
+Confluence attachments on push. Confluence (Data Center and Cloud alike) does not natively
+render Mermaid, so this gives you diagrams in git-tracked Markdown that display correctly
+on the published page — without any Confluence app or plugin.
 
 **On push:** each ` ```mermaid ` block is rendered to a retina-quality PNG by headless
 Chromium (bundled in the Docker image via Playwright and a bundled `mermaid.min.js` — no
@@ -310,16 +319,37 @@ img_dir: assets/images
 
 ## Credentials
 
-Use a Personal Access Token (PAT) — it's scoped, revocable, and doesn't expose your password:
-
-`Confluence → Profile → Personal Access Tokens → Create token`
-
 Credentials are **never created automatically** by `csync init`. Set them up by hand:
 
 ```bash
 cp .csync.env.example ~/.csync.env
-# edit ~/.csync.env and fill in CONFLUENCE_TOKEN
+# edit ~/.csync.env and fill in your credentials (see below)
 ```
+
+### Data Center
+
+Use a Personal Access Token (PAT) — it's scoped, revocable, and doesn't expose your password:
+
+`Confluence → Profile → Personal Access Tokens → Create token`
+
+```
+CONFLUENCE_TOKEN=<your PAT>
+```
+
+### Cloud
+
+Use an Atlassian API token together with your Atlassian account email:
+
+`https://id.atlassian.com/manage-profile/security/api-tokens → Create API token`
+
+```
+CONFLUENCE_TOKEN=<your API token>
+CONFLUENCE_EMAIL=you@example.com
+```
+
+Cloud authenticates with HTTP basic auth (email + API token) — this is Atlassian's
+recommended method for scripts and does **not** require `--unsafe-auth`, which only
+gates password-based basic auth on Data Center.
 
 ### Credential file location
 
@@ -344,13 +374,23 @@ without this flag and the command will exit with an error. PAT is strongly prefe
 
 ## Version support
 
-This tool targets **Confluence Data Center** and uses the v1 REST API
-(`/rest/api/content/`). It has been tested against **DC 9.2.x**.
+The tool supports both **Confluence Data Center** and **Confluence Cloud**.
+The instance type is auto-detected from the `confluence_url` hostname
+(`*.atlassian.net` → Cloud); set `instance_type: cloud` or
+`instance_type: datacenter` in the config to override (e.g. for a Cloud site
+behind a custom domain).
 
-The v1 API has been stable since Confluence 6.x and remains fully supported
-in the 9.x line, so any reasonably modern DC instance should work without
-changes.
+|  | Data Center | Cloud |
+|---|---|---|
+| `confluence_url` | `https://confluence.example.com` | `https://yoursite.atlassian.net/wiki` (`/wiki` is appended automatically if omitted) |
+| Auth | Bearer PAT (`CONFLUENCE_TOKEN`) | Basic auth: `CONFLUENCE_EMAIL` + `CONFLUENCE_TOKEN` (API token) |
+| Page read/write | v1 REST API (`/rest/api/content/`) | v2 REST API (`/api/v2/pages/`) |
+| Attachment upload | v1 REST API | v1 REST API (v2 has no upload endpoint) |
 
-**Confluence Cloud is not currently supported.** Cloud uses a different base
-URL structure and OAuth-based authentication model. Cloud support is planned
-once the relevant infrastructure migration is complete.
+Data Center has been tested against **DC 9.2.x**. The v1 API has been stable
+since Confluence 6.x and remains fully supported in the 9.x line, so any
+reasonably modern DC instance should work without changes.
+
+On Cloud, page reads and writes use the v2 API (the v1 content endpoints are
+being deprecated by Atlassian); attachment upload still uses the v1 endpoint
+because v2 does not provide one.

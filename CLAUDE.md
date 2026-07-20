@@ -5,8 +5,8 @@ This file provides context for Claude Code when working in this project.
 
 ## What this project does
 
-`py_conf_sync.py` is a single-file CLI tool that syncs Confluence Data Center pages
-with Markdown files in a git repository. It pulls pages down from Confluence (converting
+`py_conf_sync.py` is a single-file CLI tool that syncs Confluence pages (Data Center
+or Cloud) with Markdown files in a git repository. It pulls pages down from Confluence (converting
 storage format to Markdown), allows local editing, then pushes changes back (converting
 Markdown back to Confluence storage format).
 
@@ -48,9 +48,19 @@ Dependabot regenerates them automatically on its weekly dep-bump PRs.
 
 Everything lives in `py_conf_sync.py`. The main sections are:
 
-- **`ConfluenceClient`** — thin `requests` wrapper around the Confluence REST API.
-  Three methods: `get_page()`, `update_page()`, and `upload_attachment()`. Auth is
+- **`ConfluenceClient`** — thin `requests` wrapper around the Confluence DC REST API
+  (v1). Three methods: `get_page()`, `update_page()`, and `upload_attachment()`. Auth is
   either a PAT Bearer token or basic auth, loaded from `.env` via `python-dotenv`.
+
+- **`CloudConfluenceClient`** — subclass for Atlassian Cloud. Overrides `get_page()`
+  and `update_page()` to use the v2 API (`/api/v2/pages/{id}`); inherits
+  `upload_attachment()` because v2 has no attachment upload endpoint (Cloud still uses
+  the v1 path). Auth is basic auth with `CONFLUENCE_EMAIL` + `CONFLUENCE_TOKEN`
+  (Atlassian API token) — no `--unsafe-auth` needed. Selected by `_is_cloud()`:
+  explicit `instance_type` config field wins, else hostname ends with `.atlassian.net`.
+  `_get_client()` appends `/wiki` to the base URL if missing and writes it back to
+  `config["confluence_url"]` (conversion code builds/matches attachment download URLs
+  from that value).
 
 - **`storage_to_markdown()`** — converts Confluence storage format (XHTML + `ac:*`/`ri:*`
   macros) to Markdown. Named macro patterns are applied in order before markdownify runs.
@@ -113,6 +123,12 @@ pages:
 `page_id` is always treated as a string. `file_path` is relative to wherever the script
 is run from (intended to be the repo root).
 
+For Atlassian Cloud, set `confluence_url: https://yoursite.atlassian.net/wiki` (the
+`/wiki` suffix is appended automatically if omitted) and `jira_url` to the bare site URL.
+Cloud is auto-detected from `*.atlassian.net` hostnames; the optional
+`instance_type: cloud | datacenter` field overrides detection (needed for Cloud behind
+a custom domain).
+
 **`img_dir`**: On pull, if an attachment image's filename exists as `{img_dir}/{filename}`
 locally, the Markdown image reference uses the local relative path instead of the Confluence
 download URL. On push, local image references are uploaded as Confluence attachments before
@@ -121,19 +137,27 @@ converting to storage format.
 ## Credentials (`.csync.env`)
 
 ```
+# Data Center
 CONFLUENCE_TOKEN=<personal access token>
 # or (requires --unsafe-auth flag at runtime)
 CONFLUENCE_USERNAME=user@example.com
 CONFLUENCE_PASSWORD=<password>
+
+# Cloud — API token from id.atlassian.com + account email; no --unsafe-auth needed
+CONFLUENCE_TOKEN=<api token>
+CONFLUENCE_EMAIL=user@example.com
 ```
 
 Credentials are **never created by `init`** — users set them up manually by copying
-`.csync.env.example` to `~/.csync.env` and filling in their PAT.
+`.csync.env.example` to `~/.csync.env` and filling in their token.
 
 The credential file is located by searching in order: `~/.csync.env` (preferred), then
 the current working directory, then the script's own directory.
 
-Basic auth is disabled by default and requires `--unsafe-auth` to activate.
+Password basic auth (DC only) is disabled by default and requires `--unsafe-auth` to
+activate. Cloud's email + API token basic auth is not gated — it is Atlassian's
+recommended method for scripts. Cloud with a missing `CONFLUENCE_EMAIL` or
+`CONFLUENCE_TOKEN` is a hard error.
 
 ## Known limitations / gotchas
 
@@ -180,10 +204,25 @@ Basic auth is disabled by default and requires `--unsafe-auth` to activate.
 
 ## Confluence API reference
 
+Data Center (v1, base `{confluence_url}/rest/api`):
+
 - Get page: `GET /rest/api/content/{id}?expand=body.storage,version,title`
 - Update page: `PUT /rest/api/content/{id}` with JSON body (see `update_page()`)
 - Upload attachment: `POST /rest/api/content/{id}/child/attachment`
 - Space content: `GET /rest/api/space/{KEY}/content`
 
-All endpoints are Confluence DC REST API v1 (`/rest/api/`). This tool does not use the
-v2 API (`/api/v2/`) introduced in newer DC versions.
+Cloud (base `{confluence_url}` = `https://site.atlassian.net/wiki`):
+
+- Get page: `GET /api/v2/pages/{id}?body-format=storage` — response carries `title`,
+  `version.number`, and `body.storage.value` in the same shapes the v1 consumer code
+  reads, so `cmd_pull`/`cmd_push` are client-agnostic.
+- Update page: `PUT /api/v2/pages/{id}` with `{id, status: "current", title, body, version}`
+- Upload attachment: `POST /rest/api/content/{id}/child/attachment` — still v1; the v2
+  API has no attachment upload endpoint.
+- Download attachment content: `GET /rest/api/content/{id}/child/attachment/{attId}/download`
+  (redirects to a signed media URL). The legacy `/download/attachments/{id}/{file}` path
+  returns 401 for API-token auth on Cloud — it only accepts browser-session cookies —
+  which is why `download_attachment_text()` is overridden in the Cloud client.
+
+Atlassian is deprecating Cloud v1 content endpoints on a rolling timeline, which is why
+Cloud page reads/writes use v2 while DC stays on v1.

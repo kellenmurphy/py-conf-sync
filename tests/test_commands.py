@@ -135,12 +135,31 @@ class TestGetClient:
     def test_exits_when_no_env_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
         monkeypatch.chdir(tmp_path)
+        for var in ("CONFLUENCE_TOKEN", "CONFLUENCE_USERNAME", "CONFLUENCE_PASSWORD"):
+            monkeypatch.delenv(var, raising=False)
         config = {"confluence_url": "https://conf.example.com"}
         import py_conf_sync as _m
         if (Path(_m.__file__).parent / ".csync.env").exists():
             pytest.skip("Script dir has .csync.env")
         with pytest.raises(SystemExit):
             _get_client(config, self._args())
+
+    def test_env_vars_work_without_env_file(self, tmp_path, monkeypatch):
+        # FIFO/1Password or CI pattern: credentials injected as environment
+        # variables with no .csync.env on disk.
+        monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CONFLUENCE_TOKEN", "envtok")
+        monkeypatch.delenv("CONFLUENCE_USERNAME", raising=False)
+        monkeypatch.delenv("CONFLUENCE_PASSWORD", raising=False)
+        config = {"confluence_url": "https://conf.example.com"}
+        import py_conf_sync as _m
+        if (Path(_m.__file__).parent / ".csync.env").exists():
+            pytest.skip("Script dir has .csync.env")
+        session = MagicMock(headers={})
+        with patch('py_conf_sync.requests.Session', return_value=session):
+            client = _get_client(config, self._args())
+        assert session.headers["Authorization"] == "Bearer envtok"
 
     def test_exits_when_no_base_url(self, tmp_path, monkeypatch):
         env_file = tmp_path / ".csync.env"
@@ -191,6 +210,86 @@ class TestGetClient:
         with patch('py_conf_sync.requests.Session', return_value=MagicMock(headers={})):
             client = _get_client(config, self._args(unsafe_auth=True))
         assert client is not None
+
+    def _cloud_env(self, tmp_path, monkeypatch, token="apitok", email="me@example.com"):
+        env_file = tmp_path / ".csync.env"
+        lines = []
+        if token:
+            lines.append(f"CONFLUENCE_TOKEN={token}")
+            monkeypatch.setenv("CONFLUENCE_TOKEN", token)
+        else:
+            monkeypatch.delenv("CONFLUENCE_TOKEN", raising=False)
+        if email:
+            lines.append(f"CONFLUENCE_EMAIL={email}")
+            monkeypatch.setenv("CONFLUENCE_EMAIL", email)
+        else:
+            monkeypatch.delenv("CONFLUENCE_EMAIL", raising=False)
+        env_file.write_text("\n".join(lines) + "\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("CONFLUENCE_USERNAME", raising=False)
+        monkeypatch.delenv("CONFLUENCE_PASSWORD", raising=False)
+
+    def test_cloud_url_returns_cloud_client(self, tmp_path, monkeypatch):
+        self._cloud_env(tmp_path, monkeypatch)
+        config = {"confluence_url": "https://site.atlassian.net/wiki"}
+        with patch('py_conf_sync.requests.Session', return_value=MagicMock(headers={})):
+            client = _get_client(config, self._args())
+        assert isinstance(client, py_conf_sync.CloudConfluenceClient)
+        assert client.base_url == "https://site.atlassian.net/wiki"
+
+    def test_cloud_appends_wiki_to_bare_site_url(self, tmp_path, monkeypatch):
+        self._cloud_env(tmp_path, monkeypatch)
+        config = {"confluence_url": "https://site.atlassian.net"}
+        with patch('py_conf_sync.requests.Session', return_value=MagicMock(headers={})):
+            client = _get_client(config, self._args())
+        assert client.base_url == "https://site.atlassian.net/wiki"
+        # Conversion code reads confluence_url from config — must be normalized too.
+        assert config["confluence_url"] == "https://site.atlassian.net/wiki"
+
+    def test_cloud_without_email_exits(self, tmp_path, monkeypatch):
+        self._cloud_env(tmp_path, monkeypatch, email=None)
+        config = {"confluence_url": "https://site.atlassian.net/wiki"}
+        with patch('py_conf_sync.requests.Session', return_value=MagicMock(headers={})):
+            with pytest.raises(SystemExit):
+                _get_client(config, self._args())
+
+    def test_cloud_without_token_exits(self, tmp_path, monkeypatch):
+        self._cloud_env(tmp_path, monkeypatch, token=None)
+        config = {"confluence_url": "https://site.atlassian.net/wiki"}
+        with patch('py_conf_sync.requests.Session', return_value=MagicMock(headers={})):
+            with pytest.raises(SystemExit):
+                _get_client(config, self._args())
+
+    def test_instance_type_cloud_overrides_custom_domain(self, tmp_path, monkeypatch):
+        self._cloud_env(tmp_path, monkeypatch)
+        config = {"confluence_url": "https://wiki.company.com/wiki", "instance_type": "cloud"}
+        with patch('py_conf_sync.requests.Session', return_value=MagicMock(headers={})):
+            client = _get_client(config, self._args())
+        assert isinstance(client, py_conf_sync.CloudConfluenceClient)
+
+    def test_instance_type_datacenter_overrides_atlassian_host(self, tmp_path, monkeypatch):
+        self._cloud_env(tmp_path, monkeypatch)
+        session = MagicMock(headers={})
+        config = {"confluence_url": "https://site.atlassian.net", "instance_type": "datacenter"}
+        with patch('py_conf_sync.requests.Session', return_value=session):
+            client = _get_client(config, self._args())
+        assert not isinstance(client, py_conf_sync.CloudConfluenceClient)
+        assert session.headers["Authorization"] == "Bearer apitok"
+
+    def test_dc_unchanged_ignores_stray_email(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".csync.env"
+        env_file.write_text("CONFLUENCE_TOKEN=mytoken\nCONFLUENCE_EMAIL=me@example.com\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("CONFLUENCE_TOKEN", "mytoken")
+        monkeypatch.setenv("CONFLUENCE_EMAIL", "me@example.com")
+        monkeypatch.delenv("CONFLUENCE_USERNAME", raising=False)
+        monkeypatch.delenv("CONFLUENCE_PASSWORD", raising=False)
+        session = MagicMock(headers={})
+        config = {"confluence_url": "https://conf.example.com"}
+        with patch('py_conf_sync.requests.Session', return_value=session):
+            client = _get_client(config, self._args())
+        assert not isinstance(client, py_conf_sync.CloudConfluenceClient)
+        assert session.headers["Authorization"] == "Bearer mytoken"
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +394,10 @@ class TestCmdPull:
         storage = f'<p><a href="{source_url}">Mermaid source</a></p>'
         config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test"}])
         client = _mock_client(storage=storage)
-        mock_resp = MagicMock()
-        mock_resp.text = "flowchart LR\n    A --> B"
-        client.session.get.return_value = mock_resp
+        client.download_attachment_text.return_value = "flowchart LR\n    A --> B"
         monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
         cmd_pull(_pull_args(config_path))
-        client.session.get.assert_called_once_with(source_url)
+        client.download_attachment_text.assert_called_once_with("111", f"mermaid-{digest}.txt")
         assert "Mermaid source" not in (tmp_path / "page.md").read_text()
 
     def test_pull_mermaid_fetch_exception_ignored(self, tmp_path, monkeypatch):
@@ -309,7 +406,7 @@ class TestCmdPull:
         storage = f'<p><a href="{source_url}">Mermaid source</a></p>'
         config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test"}])
         client = _mock_client(storage=storage)
-        client.session.get.side_effect = Exception("network error")
+        client.download_attachment_text.side_effect = Exception("network error")
         monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
         cmd_pull(_pull_args(config_path))
         assert (tmp_path / "page.md").exists()

@@ -24,7 +24,7 @@ major:
 	$(call _release,$(NEW_VERSION))
 
 define _release
-	sed -i 's/__version__ = "$(CURRENT_VERSION)"/__version__ = "$(1)"/' py_conf_sync.py
+	sed -i.bak 's/__version__ = "$(CURRENT_VERSION)"/__version__ = "$(1)"/' py_conf_sync.py && rm py_conf_sync.py.bak
 	git add py_conf_sync.py
 	git commit -m "chore: bump version to $(1)"
 	git tag v$(1)
