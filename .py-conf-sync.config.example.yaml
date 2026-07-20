@@ -5,6 +5,11 @@
 confluence_url: https://confluence.example.com
 jira_url: https://jira.example.com  # optional — enables Jira macro links on pull
 
+# For Atlassian Cloud, use your site URL instead (auto-detected from *.atlassian.net):
+# confluence_url: https://yoursite.atlassian.net/wiki
+# jira_url: https://yoursite.atlassian.net
+# instance_type: cloud  # optional override — only needed for Cloud behind a custom domain
+
 pages:
   - page_id: "123456"
     file_path: docs/onboarding.md

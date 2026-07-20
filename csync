@@ -22,9 +22,17 @@ else
     IMAGE="$LOCAL_IMAGE"
 fi
 
-# Mount ~/.csync.env into the container at the same path so _find_env_file() can locate it
+# Mount ~/.csync.env into the container at the same path so _find_env_file() can locate it.
+# If it's a FIFO (e.g. a 1Password-served environment), Docker's VM file sharing cannot
+# pass it through — read it once on the host and inject the values as environment
+# variables instead (py_conf_sync accepts credentials from the environment). The content
+# is passed via process substitution on the exec line below: the fd only stays open
+# through exec if the substitution is part of that command, not a prior array assignment.
 home_env_args=()
-if [[ -f "$HOME/.csync.env" ]]; then
+env_file_content=""
+if [[ -p "$HOME/.csync.env" ]]; then
+    env_file_content="$(cat "$HOME/.csync.env")"
+elif [[ -f "$HOME/.csync.env" ]]; then
     home_env_args+=(-v "$HOME/.csync.env:$HOME/.csync.env" -e "HOME=$HOME")
 fi
 
@@ -36,11 +44,13 @@ for arg in "$@"; do
     fi
 done
 
+# An empty env-file is a harmless no-op, so the substitution is unconditional.
 exec docker run --rm \
     --network=host \
     --user "$(id -u):$(id -g)" \
     -v "$(pwd):/workspace" \
     -w /workspace \
+    --env-file <(printf '%s\n' "$env_file_content") \
     "${home_env_args[@]+"${home_env_args[@]}"}" \
     "${extra_mounts[@]+"${extra_mounts[@]}"}" \
     "$IMAGE" \
