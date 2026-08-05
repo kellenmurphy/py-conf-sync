@@ -1,4 +1,11 @@
 version: 2
+registries:
+  dhi-io:
+    type: docker-registry
+    url: https://dhi.io
+    username: ${{ secrets.DHI_IO_USERNAME }}
+    password: ${{ secrets.DHI_IO_TOKEN }}
+
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -11,6 +18,8 @@ updates:
 
   - package-ecosystem: "docker"
     directory: "/"
+    registries:
+      - dhi-io
     schedule:
       interval: "weekly"
       day: "monday"
