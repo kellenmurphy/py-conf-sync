@@ -14,7 +14,7 @@ greenlet==3.5.1
     # via playwright
 idna==3.17
     # via requests
-markdown==3.10.2
+markdown==3.10.3
     # via -r requirements.in
 markdownify==1.2.3
     # via -r requirements.in
