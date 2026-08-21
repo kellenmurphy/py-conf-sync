@@ -530,6 +530,52 @@ class TestCmdPush:
         cmd_push(_push_args(config_path))
         assert "confluence_version" in capsys.readouterr().out
 
+    def test_preserves_remote_title_when_none_configured(self, tmp_path, monkeypatch):
+        """Regression: a content-only push must not rename the remote page (issue #41)."""
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "grouper-db-schema.md"}])
+        (tmp_path / "grouper-db-schema.md").write_text(
+            "---\nconfluence_page_id: '111'\nconfluence_version: 5\n---\n\n# Heading\n\nBody.\n"
+        )
+        client = _mock_client(version=5, title="Grouper Database")
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_push(_push_args(config_path))
+        assert client.update_page.call_args[0][1] == "Grouper Database"
+
+    def test_front_matter_title_still_overrides_remote(self, tmp_path, monkeypatch):
+        """An explicit front-matter title is a deliberate rename and must win."""
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md"}])
+        _write_page(tmp_path, version=5)  # front-matter carries 'title: Test Page'
+        client = _mock_client(version=5, title="Old Remote Title")
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_push(_push_args(config_path))
+        assert client.update_page.call_args[0][1] == "Test Page"
+
+    def test_config_title_overrides_remote(self, tmp_path, monkeypatch):
+        """A title in the config entry also outranks the remote."""
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Config Title"}])
+        (tmp_path / "page.md").write_text(
+            "---\nconfluence_page_id: '111'\nconfluence_version: 5\n---\n\n# Heading\n\nBody.\n"
+        )
+        client = _mock_client(version=5, title="Old Remote Title")
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_push(_push_args(config_path))
+        assert client.update_page.call_args[0][1] == "Config Title"
+
+    def test_falls_back_to_filename_when_remote_has_no_title(self, tmp_path, monkeypatch):
+        """If the remote response carries no title, the filename is still the last resort."""
+        config_path = _save(tmp_path, [{"page_id": "111", "file_path": "fallback-name.md"}])
+        (tmp_path / "fallback-name.md").write_text(
+            "---\nconfluence_page_id: '111'\nconfluence_version: 5\n---\n\n# Heading\n\nBody.\n"
+        )
+        client = MagicMock()
+        client.get_page.return_value = {
+            "body": {"storage": {"value": "<p>Hello</p>"}},
+            "version": {"number": 5},
+        }
+        monkeypatch.setattr(py_conf_sync, '_get_client', lambda c, a: client)
+        cmd_push(_push_args(config_path))
+        assert client.update_page.call_args[0][1] == "fallback-name"
+
     def test_http_error_on_get_page_skips(self, tmp_path, monkeypatch, capsys):
         config_path = _save(tmp_path, [{"page_id": "111", "file_path": "page.md", "title": "Test"}])
         _write_page(tmp_path)
