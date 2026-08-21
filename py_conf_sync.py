@@ -1016,7 +1016,6 @@ def cmd_push(args):
         raw = file_path.read_text(encoding="utf-8")
         fm, body = _parse_front_matter(raw)
         local_version = fm.get("confluence_version")
-        title = fm.get("title") or entry.get("title") or file_path.stem
 
         if not local_version:
             print("[warn] no confluence_version in front-matter — conflict detection skipped", end=" ")
@@ -1028,6 +1027,10 @@ def cmd_push(args):
             continue
 
         remote_version = remote["version"]["number"]
+        # Resolve the title only after the remote is in hand: falling back to the
+        # filename before consulting the remote silently renames a page that was
+        # registered without a title (see cmd_pull, which only writes one back on pull).
+        title = fm.get("title") or entry.get("title") or remote.get("title") or file_path.stem
 
         if local_version and int(local_version) < remote_version:
             if args.force:
