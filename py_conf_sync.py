@@ -222,10 +222,44 @@ _JIRA_MACRO_RE = re.compile(
 )
 _JIRA_KEY_RE = re.compile(r'<ac:parameter ac:name="key">([^<]+)</ac:parameter>')
 _JIRA_KEY_BARE_RE = re.compile(r'<ac:parameter ac:name="">([A-Z]+-\d+)</ac:parameter>')
+# Neither half of an ac:link match may run past </ac:link>. The Cloud editor
+# rewrites in-page anchors as <ac:link ac:anchor="..."> with no ri:page child,
+# and an unguarded .*? would run from that link to the next ri:page in the
+# document, swallowing everything in between.
 _AC_LINK_RE = re.compile(
-    r'<ac:link[^>]*>.*?<ri:page[^>]*ri:content-title="([^"]+)"[^>]*/?>.*?</ac:link>',
+    r'<ac:link\b(?:(?!</ac:link>).)*?<ri:page[^>]*ri:content-title="([^"]+)"[^>]*/?>'
+    r'(?:(?!</ac:link>).)*?</ac:link>',
     re.DOTALL,
 )
+# In-page anchor link (no ri:page): <ac:link ac:anchor="id"><ac:link-body>text</ac:link-body></ac:link>
+_AC_ANCHOR_LINK_RE = re.compile(
+    r'<ac:link\b[^>]*\bac:anchor="([^"]+)"[^>]*>((?:(?!</ac:link>).)*?)</ac:link>',
+    re.DOTALL,
+)
+_AC_LINK_BODY_RE = re.compile(r'<ac:link-body>(.*?)</ac:link-body>', re.DOTALL)
+_AC_PLAIN_LINK_BODY_RE = re.compile(
+    r'<ac:plain-text-link-body><!\[CDATA\[(.*?)\]\]></ac:plain-text-link-body>', re.DOTALL
+)
+# Status lozenge: <ac:structured-macro ac:name="status"> with title and colour parameters.
+# Pulled as an inline [STATUS:colour:label] marker and restored on push.
+_STATUS_MACRO_RE = re.compile(
+    r'<ac:structured-macro[^>]*\bac:name="status"(?:[^/>]|/(?!>))*(?:/>|>(.*?)</ac:structured-macro>)',
+    re.DOTALL,
+)
+_STATUS_PARAM_RE = re.compile(r'<ac:parameter ac:name="(title|colour)">([^<]*)</ac:parameter>')
+_STATUS_PUSH_RE = re.compile(r'\[STATUS:([A-Za-z]+):([^\]\n]+)\]')
+_STATUS_COLOURS = ("Grey", "Red", "Yellow", "Green", "Blue", "Purple")
+# Cloud-editor panels are stored as an ADF extension node rather than the
+# legacy note/info/warning/tip structured macro. Pulled to the same GFM alert
+# blockquote, so a push produces the legacy macro (which Cloud renders fine).
+_ADF_PANEL_RE = re.compile(
+    r'<ac:adf-extension>\s*<ac:adf-node\b[^>]*\btype="panel"[^>]*>(.*?)</ac:adf-node>\s*'
+    r'(?:<ac:adf-fallback>.*?</ac:adf-fallback>\s*)?</ac:adf-extension>',
+    re.DOTALL,
+)
+_ADF_PANEL_TYPE_RE = re.compile(r'<ac:adf-attribute key="panel-type">([^<]*)</ac:adf-attribute>')
+_ADF_CONTENT_RE = re.compile(r'<ac:adf-content>(.*?)</ac:adf-content>', re.DOTALL)
+_ADF_PANEL_LABELS = {"info": "INFO", "note": "NOTE", "success": "TIP", "warning": "WARNING", "error": "WARNING"}
 _TRAILING_BR_RE = re.compile(r'(\s*<br\s*/?>)+(?=\s*</)', re.IGNORECASE)
 # Confluence wraps <li> content in <p> for "loose" lists; strip that wrapping so
 # markdownify produces tight lists with proper nesting instead of blank-line-separated items.
@@ -341,6 +375,58 @@ def _make_confluence_panel(panel_type: str, body: str) -> str:
     )
 
 
+def _replace_adf_panel(m: re.Match) -> str:
+    inner = m.group(1)
+    type_m = _ADF_PANEL_TYPE_RE.search(inner)
+    label = _ADF_PANEL_LABELS.get(type_m.group(1).strip().lower() if type_m else "", "NOTE")
+    body_m = _ADF_CONTENT_RE.search(inner)
+    body = body_m.group(1).strip() if body_m else ""
+    return f'<blockquote>\n<p>[!{label}]</p>\n{body}\n</blockquote>'
+
+
+def _replace_anchor_link(m: re.Match) -> str:
+    anchor, inner = m.group(1), m.group(2)
+    if "<ri:" in inner:
+        # Anchor on a page or attachment link; not an in-page link.
+        return m.group(0)
+    body_m = _AC_LINK_BODY_RE.search(inner)
+    if body_m:
+        body = body_m.group(1)
+    else:
+        plain_m = _AC_PLAIN_LINK_BODY_RE.search(inner)
+        body = html_lib.escape(plain_m.group(1)) if plain_m else anchor
+    return f'<a href="#{anchor}">{body}</a>'
+
+
+def _replace_status_macro(macro_html: str) -> str:
+    params = {k: v.strip() for k, v in _STATUS_PARAM_RE.findall(macro_html)}
+    title = params.get("title", "")
+    if not title:
+        return ""
+    colour = params.get("colour") or "Grey"
+    return f"[STATUS:{colour}:{title}]"
+
+
+def _make_confluence_status(colour: str, title: str) -> str:
+    colour = colour.capitalize()
+    if colour not in _STATUS_COLOURS:
+        colour = "Grey"
+    return (
+        f'<ac:structured-macro ac:name="status" ac:schema-version="1">'
+        f'<ac:parameter ac:name="colour">{colour}</ac:parameter>'
+        f'<ac:parameter ac:name="title">{title.strip()}</ac:parameter>'
+        f'</ac:structured-macro>'
+    )
+
+
+def _sub_outside_code(pattern: re.Pattern, repl, html: str) -> str:
+    """Apply pattern.sub to html, skipping <pre> blocks and inline <code> spans."""
+    parts = re.split(r'(<pre>.*?</pre>|<code>.*?</code>)', html, flags=re.DOTALL)
+    for i in range(0, len(parts), 2):
+        parts[i] = pattern.sub(repl, parts[i])
+    return "".join(parts)
+
+
 def _replace_expand_macro(macro_html: str) -> str:
     title_m = _EXPAND_TITLE_RE.search(macro_html)
     body_m = _EXPAND_BODY_RE.search(macro_html)
@@ -407,9 +493,6 @@ def _replace_jira_macro(macro_html: str, jira_url: str | None) -> str:
 
 
 def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url: str | None = None, page_id: str | None = None, img_dir: str | None = None) -> str:
-    # TODO: add round-trip support for status badges
-    #       (ac:structured-macro ac:name="status") →
-    #       inline marker e.g. `[STATUS:colour:label]`, restored on push.
     def _replace_toc_macro(m):
         ml = re.search(r'<ac:parameter\s+ac:name="maxLevel">(\d+)</ac:parameter>', m.group(0))
         return f'<p>[TOC maxLevel={ml.group(1)}]</p>' if ml else '<p>[TOC]</p>'
@@ -424,7 +507,10 @@ def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url
         return f"[{title}](confluence://page/{quote(title, safe='')})"
 
     cleaned = _AC_LINK_RE.sub(_replace_ac_link, cleaned)
+    cleaned = _AC_ANCHOR_LINK_RE.sub(_replace_anchor_link, cleaned)
+    cleaned = _STATUS_MACRO_RE.sub(lambda m: _replace_status_macro(m.group(0)), cleaned)
     cleaned = _PANEL_MACRO_RE.sub(_replace_panel_macro, cleaned)
+    cleaned = _ADF_PANEL_RE.sub(_replace_adf_panel, cleaned)
     cleaned = _EXPAND_MACRO_RE.sub(lambda m: _replace_expand_macro(m.group(0)), cleaned)
     cleaned = _AC_LAYOUT_TAG_RE.sub("", cleaned)
     cleaned = _CENTERED_IMG_P_RE.sub(_promote_centered_img, cleaned)
@@ -542,6 +628,9 @@ def markdown_to_storage(markdown_text: str, base_url: str | None = None, page_id
     )
     html = _EXPAND_PUSH_BLOCK_RE.sub(
         lambda m: _make_confluence_expand(m.group(1), m.group(2)), html
+    )
+    html = _sub_outside_code(
+        _STATUS_PUSH_RE, lambda m: _make_confluence_status(m.group(1), m.group(2)), html
     )
 
     def replace_pre(m):

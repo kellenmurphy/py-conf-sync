@@ -972,3 +972,186 @@ class TestRestoreMermaidBlocks:
         result = _restore_mermaid_blocks(md, {})
         assert "Mermaid source" not in result
         assert "Some text" in result
+
+
+class TestStatusBadges:
+    STORAGE = (
+        '<p>Owner: Kellen &middot; '
+        '<ac:structured-macro ac:name="status" ac:schema-version="1" ac:macro-id="abc">'
+        '<ac:parameter ac:name="title">DRAFT</ac:parameter>'
+        '<ac:parameter ac:name="colour">Red</ac:parameter>'
+        '<ac:parameter ac:name="mixedCase">true</ac:parameter>'
+        '</ac:structured-macro></p>'
+    )
+
+    def test_pull_status_marker(self):
+        result = storage_to_markdown(self.STORAGE)
+        assert "[STATUS:Red:DRAFT]" in result
+        assert "ac:structured-macro" not in result
+
+    def test_pull_status_defaults_to_grey(self):
+        storage = (
+            '<ac:structured-macro ac:name="status">'
+            '<ac:parameter ac:name="title">In Progress</ac:parameter>'
+            '</ac:structured-macro>'
+        )
+        assert "[STATUS:Grey:In Progress]" in storage_to_markdown(storage)
+
+    def test_pull_status_without_title_stripped(self):
+        storage = (
+            '<p>Before</p>'
+            '<ac:structured-macro ac:name="status">'
+            '<ac:parameter ac:name="colour">Green</ac:parameter>'
+            '</ac:structured-macro>'
+            '<p>After</p>'
+        )
+        result = storage_to_markdown(storage)
+        assert "STATUS" not in result
+        assert "Before" in result and "After" in result
+
+    def test_pull_status_self_closing_stripped(self):
+        storage = '<p>A</p><ac:structured-macro ac:name="status" ac:schema-version="1" /><p>B</p>'
+        result = storage_to_markdown(storage)
+        assert "STATUS" not in result
+        assert "ac:structured-macro" not in result
+
+    def test_push_status_marker(self):
+        result = markdown_to_storage("Owner: Kellen [STATUS:Red:DRAFT]")
+        assert 'ac:name="status"' in result
+        assert '<ac:parameter ac:name="colour">Red</ac:parameter>' in result
+        assert '<ac:parameter ac:name="title">DRAFT</ac:parameter>' in result
+        assert "[STATUS:" not in result
+
+    def test_push_status_colour_normalised(self):
+        result = markdown_to_storage("[STATUS:green:Done]")
+        assert '<ac:parameter ac:name="colour">Green</ac:parameter>' in result
+
+    def test_push_status_unknown_colour_falls_back_to_grey(self):
+        result = markdown_to_storage("[STATUS:Magenta:Odd]")
+        assert '<ac:parameter ac:name="colour">Grey</ac:parameter>' in result
+        assert '<ac:parameter ac:name="title">Odd</ac:parameter>' in result
+
+    def test_push_status_marker_in_inline_code_untouched(self):
+        result = markdown_to_storage("Write `[STATUS:Red:DRAFT]` in the file.")
+        assert 'ac:name="status"' not in result
+        assert "<code>[STATUS:Red:DRAFT]</code>" in result
+
+    def test_push_status_marker_in_fenced_code_untouched(self):
+        result = markdown_to_storage("```\n[STATUS:Red:DRAFT]\n```")
+        assert 'ac:name="status"' not in result
+        assert "[STATUS:Red:DRAFT]" in result
+
+    def test_status_round_trip(self):
+        md = storage_to_markdown(self.STORAGE)
+        result = markdown_to_storage(md)
+        assert 'ac:name="status"' in result
+        assert '<ac:parameter ac:name="colour">Red</ac:parameter>' in result
+        assert '<ac:parameter ac:name="title">DRAFT</ac:parameter>' in result
+        assert "Owner: Kellen" in result
+
+
+class TestAnchorLinks:
+    def test_pull_anchor_link_with_link_body(self):
+        storage = (
+            '<p>See <ac:link ac:anchor="5-wiring"><ac:link-body>Section 5</ac:link-body></ac:link>.</p>'
+        )
+        assert "[Section 5](#5-wiring)" in storage_to_markdown(storage)
+
+    def test_pull_anchor_link_with_plain_text_body(self):
+        storage = (
+            '<ac:link ac:anchor="top"><ac:plain-text-link-body><![CDATA[Back <up>]]></ac:plain-text-link-body></ac:link>'
+        )
+        result = storage_to_markdown(storage)
+        assert "(#top)" in result
+        assert "Back" in result and "ac:link" not in result
+
+    def test_pull_anchor_link_without_body_uses_anchor(self):
+        storage = '<ac:link ac:anchor="refs"></ac:link>'
+        assert "[refs](#refs)" in storage_to_markdown(storage)
+
+    def test_pull_anchor_on_attachment_link_left_to_macro_strip(self):
+        storage = (
+            '<p>A</p>'
+            '<ac:link ac:anchor="x"><ri:attachment ri:filename="f.pdf" /><ac:link-body>File</ac:link-body></ac:link>'
+            '<p>B</p>'
+        )
+        result = storage_to_markdown(storage)
+        assert "(#x)" not in result
+        assert "ac:link" not in result
+        assert "A" in result and "B" in result
+
+    def test_anchor_link_does_not_swallow_content_before_next_page_link(self):
+        # Regression: an anchor-only ac:link followed later by a page link used to
+        # match as one span, dropping every element in between.
+        storage = (
+            '<ul><li><ac:link ac:anchor="s5"><ac:link-body>Section 5</ac:link-body></ac:link></li></ul>'
+            '<h2>3. Principles</h2><p>Kept content.</p>'
+            '<p><ac:link><ri:page ri:content-title="Other Page" /></ac:link></p>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[Section 5](#s5)" in result
+        assert "3. Principles" in result
+        assert "Kept content" in result
+        assert "[Other Page](confluence://page/Other%20Page)" in result
+
+    def test_page_link_with_anchor_still_resolves_to_page(self):
+        storage = '<ac:link ac:anchor="sec"><ri:page ri:content-title="Target" /></ac:link>'
+        result = storage_to_markdown(storage)
+        assert "[Target](confluence://page/Target)" in result
+
+
+class TestAdfPanels:
+    def _panel(self, ptype, body="<p>Panel text.</p>", with_type=True, with_content=True):
+        attrs = f'<ac:adf-attribute key="panel-type">{ptype}</ac:adf-attribute>' if with_type else ""
+        content = f"<ac:adf-content>{body}</ac:adf-content>" if with_content else ""
+        return (
+            f'<ac:adf-extension><ac:adf-node type="panel">{attrs}'
+            f'<ac:adf-attribute key="local-id">abc123</ac:adf-attribute>{content}</ac:adf-node>'
+            f'<ac:adf-fallback><div class="panel"><div class="panelContent">{body}</div></div></ac:adf-fallback>'
+            f'</ac:adf-extension>'
+        )
+
+    def test_pull_adf_note_panel(self):
+        result = storage_to_markdown(self._panel("note"))
+        assert "[!NOTE]" in result
+        assert result.count("Panel text") == 1  # fallback copy dropped
+        assert "adf" not in result
+
+    @pytest.mark.parametrize("ptype,label", [
+        ("info", "INFO"), ("success", "TIP"), ("warning", "WARNING"), ("error", "WARNING"), ("custom", "NOTE"),
+    ])
+    def test_pull_adf_panel_type_mapping(self, ptype, label):
+        assert f"[!{label}]" in storage_to_markdown(self._panel(ptype))
+
+    def test_pull_adf_panel_without_type_defaults_to_note(self):
+        assert "[!NOTE]" in storage_to_markdown(self._panel("note", with_type=False))
+
+    def test_pull_adf_panel_without_content_is_empty_note(self):
+        result = storage_to_markdown(self._panel("note", with_content=False))
+        assert "[!NOTE]" in result
+        assert "Panel text" not in result
+
+    def test_pull_adf_panel_without_fallback(self):
+        storage = (
+            '<ac:adf-extension><ac:adf-node type="panel">'
+            '<ac:adf-attribute key="panel-type">info</ac:adf-attribute>'
+            '<ac:adf-content><p>Bare.</p></ac:adf-content></ac:adf-node></ac:adf-extension>'
+        )
+        result = storage_to_markdown(storage)
+        assert "[!INFO]" in result and "Bare" in result
+
+    def test_pull_non_panel_adf_extension_still_stripped(self):
+        storage = (
+            '<p>A</p><ac:adf-extension><ac:adf-node type="decision-list">'
+            '<ac:adf-content><p>Decided.</p></ac:adf-content></ac:adf-node></ac:adf-extension><p>B</p>'
+        )
+        result = storage_to_markdown(storage)
+        assert "Decided" not in result
+        assert "A" in result and "B" in result
+
+    def test_adf_panel_round_trip_to_legacy_macro(self):
+        md = storage_to_markdown(self._panel("warning", "<p>Careful.</p>"))
+        result = markdown_to_storage(md)
+        assert 'ac:name="warning"' in result
+        assert "Careful" in result
+        assert "adf" not in result
