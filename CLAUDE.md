@@ -97,15 +97,17 @@ open/close pairs and cannot consume content across tag boundaries.
 
 | Macro | Pull | Push | Notes |
 |---|---|---|---|
-| `code` | ` ```lang ``` ` fenced block | `ac:structured-macro ac:name="code"` | Full round-trip |
+| `code` | ` ```lang ``` ` fenced block | `ac:structured-macro ac:name="code"` | Full round-trip. Cloud `breakoutMode`/`breakoutWidth` params ride in the fence info string as attr_list: ` ```{ .lang breakout=wide breakout-width=1800 } `; pull sets `data-breakout*` on the `<pre>` for `_code_language_callback`, push reads the attributes attr_list puts on `<code>` |
 | `noformat` | ` ```noformat ``` ` fenced block | `ac:structured-macro ac:name="noformat"` | Full round-trip |
 | `toc` | `[TOC]` or `[TOC maxLevel=N]` placeholder | `ac:structured-macro ac:name="toc"` | Full round-trip; `maxLevel` param preserved |
 | `children` | `[CHILDREN]` placeholder | `ac:structured-macro ac:name="children"` | Full round-trip |
 | `expand` | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` | Full round-trip; code inside expand becomes fenced on pull |
-| `note`/`info`/`warning`/`tip` | `> [!NOTE]` etc. GFM alerts | `ac:structured-macro ac:name="note\|info\|..."` | Full round-trip |
+| `note`/`info`/`warning`/`tip` | `> [!NOTE]` etc. GFM alerts | `ac:structured-macro ac:name="note\|info\|..."` | Full round-trip. The Cloud editor stores panels as `ac:adf-extension` / `ac:adf-node type="panel"`; `_ADF_PANEL_RE` pulls those to the same markers (`success` → TIP, `error` → WARNING, unknown → NOTE) and drops the `ac:adf-fallback` copy, so a push emits the legacy macro |
+| `status` | `[STATUS:colour:label]` inline marker | `ac:structured-macro ac:name="status"` with `colour` and `title` params | Full round-trip. Colour normalised to Grey/Red/Yellow/Green/Blue/Purple, unknown → Grey; a macro with no title is stripped. `_sub_outside_code` keeps markers inside `<pre>`/`<code>` literal on push |
 | `jira` | `[KEY-123](jira_url/browse/KEY-123)` | `ac:structured-macro ac:name="jira"` | Full round-trip |
 | `ac:image` | `![filename](url "ac:attrs")` | `ac:image` + `ri:attachment` or `ri:url` | Full round-trip with size/alignment/title |
 | `ac:link` | `[Title](confluence://page/Title)` | `ac:link` + `ri:page` | Full round-trip |
+| `ac:link ac:anchor` (no `ri:page`) | `[text](#anchor)` | `<a href="#anchor">` | The Cloud editor rewrites in-page `<a href="#...">` links into this form on its first save. Both link regexes are guarded with `(?:(?!</ac:link>).)*?` so a match can never cross a link boundary; an unguarded `.*?` used to run from an anchor-only link to the next `ri:page` and drop everything between |
 | All others | stripped | not produced | `_MACRO_RE` removes remaining `ac:*` tags |
 
 ## Config format (`.py-conf-sync.config.yaml`)
@@ -189,9 +191,6 @@ recommended method for scripts. Cloud with a missing `CONFLUENCE_EMAIL` or
   upward.
 
 ## Common extension points
-
-- **Status badges**: `ac:structured-macro ac:name="status"` → an inline marker like
-  `[STATUS:colour:label]`, restored on push. Would follow the same pattern as panel macros.
 
 - **A `diff` command**: Fetch remote, convert to Markdown, diff against local file without
   writing. Would reuse `storage_to_markdown()` and could pipe to `difflib`.

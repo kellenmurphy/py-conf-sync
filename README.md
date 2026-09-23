@@ -210,6 +210,7 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Headings | `#` / `##` / etc. | `<h1>` – `<h6>` |
 | Paragraphs, bold, italic, inline code | Standard Markdown | `<p>`, `<strong>`, `<em>`, `<code>` |
 | Fenced code blocks (with language) | ` ```python ``` ` | `ac:structured-macro ac:name="code"` with `language` parameter |
+| Wide / full-width code blocks (Cloud) | ` ```{ .python breakout=wide breakout-width=1800 } ` (python-markdown attr_list form; omit `.lang` for no language) | `breakoutMode` and `breakoutWidth` parameters on the `code` or `noformat` macro |
 | Fenced code blocks (no language / noformat) | ` ```noformat ``` ` | `ac:structured-macro ac:name="noformat"` |
 | Table of contents | `[TOC]` | `ac:structured-macro ac:name="toc"` |
 | Collapsible expand sections | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` |
@@ -218,9 +219,11 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Mermaid diagrams | ` ```mermaid ``` ` | PNG attachment + `.txt` source attachment; fence restored on pull |
 | Attached images (with size, alignment, caption) | `![filename](img/filename "ac:width=750 ac:align=center ac:title=...")` | `ac:image` + `ri:attachment` with all display attributes restored |
 | External images | `![alt](https://...)` | `ac:image` + `ri:url` |
-| Info / Note / Warning / Tip panels | `> [!NOTE]` / `> [!INFO]` / `> [!WARNING]` / `> [!TIP]` | `ac:structured-macro ac:name="note\|info\|warning\|tip"` |
+| Info / Note / Warning / Tip panels | `> [!NOTE]` / `> [!INFO]` / `> [!WARNING]` / `> [!TIP]` | `ac:structured-macro ac:name="note\|info\|warning\|tip"`; Cloud-editor `ac:adf-extension` panels are pulled to the same markers (`success` becomes TIP, `error` becomes WARNING) and pushed back as the legacy macro |
+| Status lozenges | `[STATUS:colour:label]` inline, e.g. `[STATUS:Red:DRAFT]` | `ac:structured-macro ac:name="status"`; colour is Grey, Red, Yellow, Green, Blue or Purple, anything else falls back to Grey; markers inside code spans and fenced blocks are left alone |
 | Jira issue links | `[KEY-123](jira_url/browse/KEY-123)` | `ac:structured-macro ac:name="jira"` |
 | Confluence page links | `[Title](confluence://page/Title)` | `ac:link` + `ri:page` |
+| In-page anchor links | `[Section 5](#5-heading-id)` | `ac:link ac:anchor="..."` on pull (the form the Cloud editor writes); pushed as `<a href="#...">`, which Confluence accepts |
 | Relative links to tracked pages | `[Other Page](path/to/other.md)` | Resolved against config registry → `ac:link` internal link or page-ID URL |
 | Blockquotes | `>` | `<blockquote>` |
 | Horizontal rules | `---` | `<hr />` |
@@ -301,12 +304,6 @@ img_dir: assets/images
 
 - **Version conflict detection is optimistic.** If two people edit the same local file
   and push, the last writer wins.
-
-### Not yet supported (planned)
-
-| Feature | Notes |
-|---|---|
-| Status badges | Planned: map to an inline marker e.g. `[STATUS:colour:label]` |
 
 ### Not supported (out of scope)
 

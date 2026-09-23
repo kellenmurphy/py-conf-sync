@@ -216,20 +216,60 @@ _NOFORMAT_MACRO_RE = re.compile(
 )
 _CODE_LANG_RE = re.compile(r'<ac:parameter ac:name="language">([^<]*)</ac:parameter>')
 _CODE_BODY_RE = re.compile(r'<ac:plain-text-body[^>]*><!\[CDATA\[(.*?)\]\]></ac:plain-text-body>', re.DOTALL)
+# Cloud "wide" / "full-width" code blocks. Carried through Markdown in the fence
+# info string using python-markdown's attr_list form:
+#   ```{ .python breakout=wide breakout-width=1800 }
+_CODE_BREAKOUT_RE = re.compile(r'<ac:parameter ac:name="breakoutMode">([^<]*)</ac:parameter>')
+_CODE_BREAKOUT_WIDTH_RE = re.compile(r'<ac:parameter ac:name="breakoutWidth">([^<]*)</ac:parameter>')
 _JIRA_MACRO_RE = re.compile(
     r'<ac:structured-macro[^>]*ac:name="jira"(?:[^/>]|/(?!>))*(?:/>|>.*?</ac:structured-macro>)',
     re.DOTALL,
 )
 _JIRA_KEY_RE = re.compile(r'<ac:parameter ac:name="key">([^<]+)</ac:parameter>')
 _JIRA_KEY_BARE_RE = re.compile(r'<ac:parameter ac:name="">([A-Z]+-\d+)</ac:parameter>')
+# Neither half of an ac:link match may run past </ac:link>. The Cloud editor
+# rewrites in-page anchors as <ac:link ac:anchor="..."> with no ri:page child,
+# and an unguarded .*? would run from that link to the next ri:page in the
+# document, swallowing everything in between.
 _AC_LINK_RE = re.compile(
-    r'<ac:link[^>]*>.*?<ri:page[^>]*ri:content-title="([^"]+)"[^>]*/?>.*?</ac:link>',
+    r'<ac:link\b(?:(?!</ac:link>).)*?<ri:page[^>]*ri:content-title="([^"]+)"[^>]*/?>'
+    r'(?:(?!</ac:link>).)*?</ac:link>',
     re.DOTALL,
 )
+# In-page anchor link (no ri:page): <ac:link ac:anchor="id"><ac:link-body>text</ac:link-body></ac:link>
+_AC_ANCHOR_LINK_RE = re.compile(
+    r'<ac:link\b[^>]*\bac:anchor="([^"]+)"[^>]*>((?:(?!</ac:link>).)*?)</ac:link>',
+    re.DOTALL,
+)
+_AC_LINK_BODY_RE = re.compile(r'<ac:link-body>(.*?)</ac:link-body>', re.DOTALL)
+_AC_PLAIN_LINK_BODY_RE = re.compile(
+    r'<ac:plain-text-link-body><!\[CDATA\[(.*?)\]\]></ac:plain-text-link-body>', re.DOTALL
+)
+# Status lozenge: <ac:structured-macro ac:name="status"> with title and colour parameters.
+# Pulled as an inline [STATUS:colour:label] marker and restored on push.
+_STATUS_MACRO_RE = re.compile(
+    r'<ac:structured-macro[^>]*\bac:name="status"(?:[^/>]|/(?!>))*(?:/>|>(.*?)</ac:structured-macro>)',
+    re.DOTALL,
+)
+_STATUS_PARAM_RE = re.compile(r'<ac:parameter ac:name="(title|colour)">([^<]*)</ac:parameter>')
+_STATUS_PUSH_RE = re.compile(r'\[STATUS:([A-Za-z]+):([^\]\n]+)\]')
+_STATUS_COLOURS = ("Grey", "Red", "Yellow", "Green", "Blue", "Purple")
+# Cloud-editor panels are stored as an ADF extension node rather than the
+# legacy note/info/warning/tip structured macro. Pulled to the same GFM alert
+# blockquote, so a push produces the legacy macro (which Cloud renders fine).
+_ADF_PANEL_RE = re.compile(
+    r'<ac:adf-extension>\s*<ac:adf-node\b[^>]*\btype="panel"[^>]*>(.*?)</ac:adf-node>\s*'
+    r'(?:<ac:adf-fallback>.*?</ac:adf-fallback>\s*)?</ac:adf-extension>',
+    re.DOTALL,
+)
+_ADF_PANEL_TYPE_RE = re.compile(r'<ac:adf-attribute key="panel-type">([^<]*)</ac:adf-attribute>')
+_ADF_CONTENT_RE = re.compile(r'<ac:adf-content>(.*?)</ac:adf-content>', re.DOTALL)
+_ADF_PANEL_LABELS = {"info": "INFO", "note": "NOTE", "success": "TIP", "warning": "WARNING", "error": "WARNING"}
 _TRAILING_BR_RE = re.compile(r'(\s*<br\s*/?>)+(?=\s*</)', re.IGNORECASE)
 # Confluence wraps <li> content in <p> for "loose" lists; strip that wrapping so
 # markdownify produces tight lists with proper nesting instead of blank-line-separated items.
-_LI_P_UNWRAP_RE = re.compile(r'(<li[^>]*>)\s*<p>(.*?)</p>(?=\s*(?:</li>|<ul))', re.DOTALL)
+# The Cloud editor stamps local-id on every <p>, so the tag must be matched with attributes.
+_LI_P_UNWRAP_RE = re.compile(r'(<li[^>]*>)\s*<p(?:\s[^>]*)?>(.*?)</p>(?=\s*(?:</li>|<ul|<ol))', re.DOTALL)
 _AC_IMAGE_RE = re.compile(r'<ac:image([^>]*)>(.*?)</ac:image>', re.DOTALL)
 _RI_ATTACHMENT_FILENAME_RE = re.compile(r'ri:filename="([^"]+)"')
 _RI_URL_VALUE_RE = re.compile(r'ri:value="([^"]+)"')
@@ -288,6 +328,19 @@ _EXPAND_PUSH_BLOCK_RE = re.compile(
 )
 
 
+def _breakout_pre_attrs(macro_html: str) -> str:
+    mode_m = _CODE_BREAKOUT_RE.search(macro_html)
+    mode = mode_m.group(1).strip() if mode_m else ""
+    if not mode:
+        return ""
+    attrs = f' data-breakout="{html_lib.escape(mode, quote=True)}"'
+    width_m = _CODE_BREAKOUT_WIDTH_RE.search(macro_html)
+    width = width_m.group(1).strip() if width_m else ""
+    if width:
+        attrs += f' data-breakout-width="{html_lib.escape(width, quote=True)}"'
+    return attrs
+
+
 def _replace_code_macro(macro_html: str) -> str:
     lang_match = _CODE_LANG_RE.search(macro_html)
     body_match = _CODE_BODY_RE.search(macro_html)
@@ -299,7 +352,7 @@ def _replace_code_macro(macro_html: str) -> str:
     lang = html_lib.escape(lang, quote=True)
     code = html_lib.escape(body_match.group(1))
     lang_class = f' class="language-{lang}"' if lang else ""
-    return f"<pre><code{lang_class}>{code}</code></pre>"
+    return f"<pre{_breakout_pre_attrs(macro_html)}><code{lang_class}>{code}</code></pre>"
 
 
 def _replace_noformat_macro(macro_html: str) -> str:
@@ -307,16 +360,26 @@ def _replace_noformat_macro(macro_html: str) -> str:
     if not body_match:
         return ""
     code = html_lib.escape(body_match.group(1))
-    return f'<pre><code class="language-noformat">{code}</code></pre>'
+    return f'<pre{_breakout_pre_attrs(macro_html)}><code class="language-noformat">{code}</code></pre>'
 
 
 def _code_language_callback(el) -> str | None:
     # markdownify passes the <pre> element; the language class is on the <code> child.
     code = el.find("code")
+    lang = None
     for cls in (code.get("class") if code else []) or []:
         if cls.startswith("language-"):
-            return cls[len("language-"):]
-    return None
+            lang = cls[len("language-"):]
+            break
+    breakout = el.get("data-breakout")
+    if not breakout:
+        return lang
+    parts = [f".{lang}"] if lang else []
+    parts.append(f"breakout={breakout}")
+    width = el.get("data-breakout-width")
+    if width:
+        parts.append(f"breakout-width={width}")
+    return "{ " + " ".join(parts) + " }"
 
 
 def _promote_centered_img(m: re.Match) -> str:
@@ -339,6 +402,58 @@ def _make_confluence_panel(panel_type: str, body: str) -> str:
         f'<ac:rich-text-body>{body}</ac:rich-text-body>'
         f'</ac:structured-macro>'
     )
+
+
+def _replace_adf_panel(m: re.Match) -> str:
+    inner = m.group(1)
+    type_m = _ADF_PANEL_TYPE_RE.search(inner)
+    label = _ADF_PANEL_LABELS.get(type_m.group(1).strip().lower() if type_m else "", "NOTE")
+    body_m = _ADF_CONTENT_RE.search(inner)
+    body = body_m.group(1).strip() if body_m else ""
+    return f'<blockquote>\n<p>[!{label}]</p>\n{body}\n</blockquote>'
+
+
+def _replace_anchor_link(m: re.Match) -> str:
+    anchor, inner = m.group(1), m.group(2)
+    if "<ri:" in inner:
+        # Anchor on a page or attachment link; not an in-page link.
+        return m.group(0)
+    body_m = _AC_LINK_BODY_RE.search(inner)
+    if body_m:
+        body = body_m.group(1)
+    else:
+        plain_m = _AC_PLAIN_LINK_BODY_RE.search(inner)
+        body = html_lib.escape(plain_m.group(1)) if plain_m else anchor
+    return f'<a href="#{anchor}">{body}</a>'
+
+
+def _replace_status_macro(macro_html: str) -> str:
+    params = {k: v.strip() for k, v in _STATUS_PARAM_RE.findall(macro_html)}
+    title = params.get("title", "")
+    if not title:
+        return ""
+    colour = params.get("colour") or "Grey"
+    return f"[STATUS:{colour}:{title}]"
+
+
+def _make_confluence_status(colour: str, title: str) -> str:
+    colour = colour.capitalize()
+    if colour not in _STATUS_COLOURS:
+        colour = "Grey"
+    return (
+        f'<ac:structured-macro ac:name="status" ac:schema-version="1">'
+        f'<ac:parameter ac:name="colour">{colour}</ac:parameter>'
+        f'<ac:parameter ac:name="title">{title.strip()}</ac:parameter>'
+        f'</ac:structured-macro>'
+    )
+
+
+def _sub_outside_code(pattern: re.Pattern, repl, html: str) -> str:
+    """Apply pattern.sub to html, skipping <pre> blocks and inline <code> spans."""
+    parts = re.split(r'(<pre\b[^>]*>.*?</pre>|<code\b[^>]*>.*?</code>)', html, flags=re.DOTALL)
+    for i in range(0, len(parts), 2):
+        parts[i] = pattern.sub(repl, parts[i])
+    return "".join(parts)
 
 
 def _replace_expand_macro(macro_html: str) -> str:
@@ -407,9 +522,6 @@ def _replace_jira_macro(macro_html: str, jira_url: str | None) -> str:
 
 
 def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url: str | None = None, page_id: str | None = None, img_dir: str | None = None) -> str:
-    # TODO: add round-trip support for status badges
-    #       (ac:structured-macro ac:name="status") →
-    #       inline marker e.g. `[STATUS:colour:label]`, restored on push.
     def _replace_toc_macro(m):
         ml = re.search(r'<ac:parameter\s+ac:name="maxLevel">(\d+)</ac:parameter>', m.group(0))
         return f'<p>[TOC maxLevel={ml.group(1)}]</p>' if ml else '<p>[TOC]</p>'
@@ -424,7 +536,10 @@ def storage_to_markdown(storage_html: str, jira_url: str | None = None, base_url
         return f"[{title}](confluence://page/{quote(title, safe='')})"
 
     cleaned = _AC_LINK_RE.sub(_replace_ac_link, cleaned)
+    cleaned = _AC_ANCHOR_LINK_RE.sub(_replace_anchor_link, cleaned)
+    cleaned = _STATUS_MACRO_RE.sub(lambda m: _replace_status_macro(m.group(0)), cleaned)
     cleaned = _PANEL_MACRO_RE.sub(_replace_panel_macro, cleaned)
+    cleaned = _ADF_PANEL_RE.sub(_replace_adf_panel, cleaned)
     cleaned = _EXPAND_MACRO_RE.sub(lambda m: _replace_expand_macro(m.group(0)), cleaned)
     cleaned = _AC_LAYOUT_TAG_RE.sub("", cleaned)
     cleaned = _CENTERED_IMG_P_RE.sub(_promote_centered_img, cleaned)
@@ -543,34 +658,42 @@ def markdown_to_storage(markdown_text: str, base_url: str | None = None, page_id
     html = _EXPAND_PUSH_BLOCK_RE.sub(
         lambda m: _make_confluence_expand(m.group(1), m.group(2)), html
     )
+    html = _sub_outside_code(
+        _STATUS_PUSH_RE, lambda m: _make_confluence_status(m.group(1), m.group(2)), html
+    )
 
     def replace_pre(m):
         inner = m.group(1)
-        lang_match = re.match(r'<code class="language-([^"]+)">(.*)</code>', inner, re.DOTALL)
-        if lang_match:
-            lang, code = lang_match.groups()
-            lang = html_lib.escape(lang, quote=True)
-            code = _unescape_html(code)
-        else:
-            lang = "none"
-            code_match = re.match(r"<code>(.*)</code>", inner, re.DOTALL)
-            code = _unescape_html(code_match.group(1)) if code_match else _unescape_html(inner)
+        code_match = re.match(r"<code\b([^>]*)>(.*)</code>", inner, re.DOTALL)
+        attrs = code_match.group(1) if code_match else ""
+        code = _unescape_html(code_match.group(2) if code_match else inner)
+        lang_m = re.search(r'\bclass="language-([^"]+)"', attrs)
+        lang = html_lib.escape(lang_m.group(1), quote=True) if lang_m else "none"
+        # Breakout attributes come from the fence info string via attr_list:
+        # ```{ .python breakout=wide breakout-width=1800 }
+        breakout_params = ""
+        mode_m = re.search(r'\bbreakout="([^"]+)"', attrs)
+        if mode_m:
+            breakout_params += f'<ac:parameter ac:name="breakoutMode">{mode_m.group(1)}</ac:parameter>'
+            width_m = re.search(r'\bbreakout-width="([^"]+)"', attrs)
+            if width_m:
+                breakout_params += f'<ac:parameter ac:name="breakoutWidth">{width_m.group(1)}</ac:parameter>'
         # Escape CDATA end sequence so user code can't break the CDATA block.
         code = code.replace("]]>", "]]]]><![CDATA[>")
         if lang == "noformat":
             return (
-                f'<ac:structured-macro ac:name="noformat">'
+                f'<ac:structured-macro ac:name="noformat">{breakout_params}'
                 f'<ac:plain-text-body><![CDATA[{code}]]></ac:plain-text-body>'
                 f"</ac:structured-macro>"
             )
         return (
             f'<ac:structured-macro ac:name="code">'
-            f'<ac:parameter ac:name="language">{lang}</ac:parameter>'
+            f'<ac:parameter ac:name="language">{lang}</ac:parameter>{breakout_params}'
             f'<ac:plain-text-body><![CDATA[{code}]]></ac:plain-text-body>'
             f"</ac:structured-macro>"
         )
 
-    html = re.sub(r"<pre>(.*?)</pre>", replace_pre, html, flags=re.DOTALL)
+    html = re.sub(r"<pre\b[^>]*>(.*?)</pre>", replace_pre, html, flags=re.DOTALL)
 
     # Match Confluence's native table structure: class="wrapped" on the table,
     # and every th/td cell content wrapped in <p>.
