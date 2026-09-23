@@ -97,7 +97,7 @@ open/close pairs and cannot consume content across tag boundaries.
 
 | Macro | Pull | Push | Notes |
 |---|---|---|---|
-| `code` | ` ```lang ``` ` fenced block | `ac:structured-macro ac:name="code"` | Full round-trip |
+| `code` | ` ```lang ``` ` fenced block | `ac:structured-macro ac:name="code"` | Full round-trip. Cloud `breakoutMode`/`breakoutWidth` params ride in the fence info string as attr_list: ` ```{ .lang breakout=wide breakout-width=1800 } `; pull sets `data-breakout*` on the `<pre>` for `_code_language_callback`, push reads the attributes attr_list puts on `<code>` |
 | `noformat` | ` ```noformat ``` ` fenced block | `ac:structured-macro ac:name="noformat"` | Full round-trip |
 | `toc` | `[TOC]` or `[TOC maxLevel=N]` placeholder | `ac:structured-macro ac:name="toc"` | Full round-trip; `maxLevel` param preserved |
 | `children` | `[CHILDREN]` placeholder | `ac:structured-macro ac:name="children"` | Full round-trip |

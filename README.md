@@ -210,6 +210,7 @@ Confluence will render correctly, and pulling that page back produces the same M
 | Headings | `#` / `##` / etc. | `<h1>` – `<h6>` |
 | Paragraphs, bold, italic, inline code | Standard Markdown | `<p>`, `<strong>`, `<em>`, `<code>` |
 | Fenced code blocks (with language) | ` ```python ``` ` | `ac:structured-macro ac:name="code"` with `language` parameter |
+| Wide / full-width code blocks (Cloud) | ` ```{ .python breakout=wide breakout-width=1800 } ` (python-markdown attr_list form; omit `.lang` for no language) | `breakoutMode` and `breakoutWidth` parameters on the `code` or `noformat` macro |
 | Fenced code blocks (no language / noformat) | ` ```noformat ``` ` | `ac:structured-macro ac:name="noformat"` |
 | Table of contents | `[TOC]` | `ac:structured-macro ac:name="toc"` |
 | Collapsible expand sections | `> [!EXPAND] Title` blockquote | `ac:structured-macro ac:name="expand"` |

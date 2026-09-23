@@ -1155,3 +1155,68 @@ class TestAdfPanels:
         assert 'ac:name="warning"' in result
         assert "Careful" in result
         assert "adf" not in result
+
+
+class TestCodeBreakout:
+    def _macro(self, lang="python", mode="wide", width="1800", name="code"):
+        params = f'<ac:parameter ac:name="language">{lang}</ac:parameter>' if lang is not None else ""
+        if mode:
+            params += f'<ac:parameter ac:name="breakoutMode">{mode}</ac:parameter>'
+        if width:
+            params += f'<ac:parameter ac:name="breakoutWidth">{width}</ac:parameter>'
+        return (
+            f'<ac:structured-macro ac:name="{name}" ac:schema-version="1">{params}'
+            '<ac:plain-text-body><![CDATA[x = 1]]></ac:plain-text-body></ac:structured-macro>'
+        )
+
+    def test_pull_wide_code_with_language(self):
+        result = storage_to_markdown(self._macro())
+        assert "```{ .python breakout=wide breakout-width=1800 }" in result
+        assert "x = 1" in result
+
+    def test_pull_wide_code_without_language(self):
+        result = storage_to_markdown(self._macro(lang="none"))
+        assert "```{ breakout=wide breakout-width=1800 }" in result
+
+    def test_pull_breakout_without_width(self):
+        result = storage_to_markdown(self._macro(mode="full-width", width=None))
+        assert "```{ .python breakout=full-width }" in result
+
+    def test_pull_wide_noformat(self):
+        result = storage_to_markdown(self._macro(lang=None, width=None, name="noformat"))
+        assert "```{ .noformat breakout=wide }" in result
+
+    def test_pull_plain_code_fence_unchanged(self):
+        result = storage_to_markdown(self._macro(mode=None, width=None))
+        assert "```python\n" in result
+        assert "breakout" not in result
+
+    def test_push_wide_code_with_language(self):
+        result = markdown_to_storage("```{ .python breakout=wide breakout-width=1800 }\nx = 1\n```")
+        assert '<ac:parameter ac:name="language">python</ac:parameter>' in result
+        assert '<ac:parameter ac:name="breakoutMode">wide</ac:parameter>' in result
+        assert '<ac:parameter ac:name="breakoutWidth">1800</ac:parameter>' in result
+        assert "x = 1" in result
+
+    def test_push_wide_code_without_language(self):
+        result = markdown_to_storage("```{ breakout=wide }\nx = 1\n```")
+        assert '<ac:parameter ac:name="language">none</ac:parameter>' in result
+        assert '<ac:parameter ac:name="breakoutMode">wide</ac:parameter>' in result
+        assert "breakoutWidth" not in result
+
+    def test_push_wide_noformat(self):
+        result = markdown_to_storage("```{ .noformat breakout=wide }\nraw\n```")
+        assert 'ac:name="noformat"' in result
+        assert '<ac:parameter ac:name="breakoutMode">wide</ac:parameter>' in result
+
+    def test_push_plain_fence_has_no_breakout(self):
+        result = markdown_to_storage("```python\nx = 1\n```")
+        assert "breakout" not in result
+
+    def test_breakout_round_trip(self):
+        md = storage_to_markdown(self._macro())
+        result = markdown_to_storage(md)
+        assert '<ac:parameter ac:name="language">python</ac:parameter>' in result
+        assert '<ac:parameter ac:name="breakoutMode">wide</ac:parameter>' in result
+        assert '<ac:parameter ac:name="breakoutWidth">1800</ac:parameter>' in result
+
