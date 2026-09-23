@@ -26,7 +26,7 @@ import yaml
 from markdownify import markdownify as md
 from dotenv import load_dotenv
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # ---------------------------------------------------------------------------
 # Config helpers
