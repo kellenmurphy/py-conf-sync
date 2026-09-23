@@ -268,7 +268,8 @@ _ADF_PANEL_LABELS = {"info": "INFO", "note": "NOTE", "success": "TIP", "warning"
 _TRAILING_BR_RE = re.compile(r'(\s*<br\s*/?>)+(?=\s*</)', re.IGNORECASE)
 # Confluence wraps <li> content in <p> for "loose" lists; strip that wrapping so
 # markdownify produces tight lists with proper nesting instead of blank-line-separated items.
-_LI_P_UNWRAP_RE = re.compile(r'(<li[^>]*>)\s*<p>(.*?)</p>(?=\s*(?:</li>|<ul))', re.DOTALL)
+# The Cloud editor stamps local-id on every <p>, so the tag must be matched with attributes.
+_LI_P_UNWRAP_RE = re.compile(r'(<li[^>]*>)\s*<p(?:\s[^>]*)?>(.*?)</p>(?=\s*(?:</li>|<ul|<ol))', re.DOTALL)
 _AC_IMAGE_RE = re.compile(r'<ac:image([^>]*)>(.*?)</ac:image>', re.DOTALL)
 _RI_ATTACHMENT_FILENAME_RE = re.compile(r'ri:filename="([^"]+)"')
 _RI_URL_VALUE_RE = re.compile(r'ri:value="([^"]+)"')

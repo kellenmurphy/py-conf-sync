@@ -1220,3 +1220,18 @@ class TestCodeBreakout:
         assert '<ac:parameter ac:name="breakoutMode">wide</ac:parameter>' in result
         assert '<ac:parameter ac:name="breakoutWidth">1800</ac:parameter>' in result
 
+
+class TestCloudListUnwrap:
+    def test_li_p_with_attributes_pulls_tight_list(self):
+        storage = (
+            '<ul local-id="u1"><li local-id="a"><p local-id="b">One</p></li>'
+            '<li local-id="c"><p local-id="d">Two</p></li></ul>'
+        )
+        assert storage_to_markdown(storage) == "- One\n- Two"
+
+    def test_li_p_before_nested_ol_unwrapped(self):
+        storage = (
+            '<ul><li><p local-id="x">Parent</p><ol><li><p local-id="y">Child</p></li></ol></li></ul>'
+        )
+        result = storage_to_markdown(storage)
+        assert "- Parent\n  1. Child" in result
