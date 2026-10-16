@@ -44,9 +44,23 @@ for arg in "$@"; do
     fi
 done
 
+# Linux hosts need two extras that Docker Desktop never does. Under SELinux
+# (Fedora, RHEL) a bind mount without a label is unreadable in the container;
+# disabling labeling for this one container avoids :z, which would permanently
+# relabel the user's repo. Under rootless podman, --user maps to a subordinate
+# host uid that cannot write the user's files unless the namespace keeps it.
+host_args=()
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    host_args+=(--security-opt label=disable)
+fi
+if docker --version 2>/dev/null | grep -qi podman; then
+    host_args+=(--userns=keep-id)
+fi
+
 # An empty env-file is a harmless no-op, so the substitution is unconditional.
 exec docker run --rm \
     --network=host \
+    "${host_args[@]+"${host_args[@]}"}" \
     --user "$(id -u):$(id -g)" \
     -v "$(pwd):/workspace" \
     -w /workspace \

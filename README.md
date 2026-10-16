@@ -73,6 +73,8 @@ It builds the image on first use and mounts your current directory into the cont
 Absolute paths in arguments are automatically mounted into the container, so
 cross-repo operations work without any extra flags.
 
+**Podman and SELinux (Fedora, RHEL).** The wrapper works with rootless podman through the `podman-docker` shim. When SELinux is enabled it runs the container with `--security-opt label=disable`, since an unlabeled bind mount is unreadable there and `:z` would permanently relabel the repo; when `docker` is podman it adds `--userns=keep-id`, so pulled files are owned by the calling user rather than a subordinate uid. Neither applies under Docker Desktop.
+
 **After updating `py_conf_sync.py` or `requirements.in`**, rebuild the image:
 
 ```bash
