@@ -14,11 +14,11 @@ greenlet==3.5.1
     # via playwright
 idna==3.17
     # via requests
-markdown==3.11
+markdown==3.11.1
     # via -r requirements.in
 markdownify==1.2.3
     # via -r requirements.in
-playwright==1.63.0
+playwright==1.64.0
     # via -r requirements.in
 pyee==13.0.1
     # via playwright
