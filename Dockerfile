@@ -1,4 +1,4 @@
-FROM dhi.io/python:3.14-debian13-dev
+FROM dhi.io/python:3.15-debian13-dev
 WORKDIR /app
 
 COPY requirements.txt .
