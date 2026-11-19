@@ -9,7 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # that fail to configure in this apt environment. Chromium in headless mode does
 # not need a display server; the required shared libraries are installed below.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN playwright install chromium
+# Playwright's bundled Node driver needs libatomic.so.1, which the base image does
+# not ship, so it has to be installed before the driver runs to download Chromium.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && playwright install chromium
 
 # Install Chromium's runtime library dependencies and bundle mermaid.min.js
 # at build time so diagram rendering works fully offline at runtime.
